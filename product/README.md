@@ -1,5 +1,12 @@
-# The is the product documentation
+# Product
+
+User-facing documentation.
+
 - Installation guide
-- User's manual
+- User manual
 - Examples
-- 
+
+Start with:
+
+- `use-cases.md`
+- `concepts/how-truthdb-differs-from-postgres.md`
