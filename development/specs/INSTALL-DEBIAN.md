@@ -1,6 +1,6 @@
 # INSTALL-DEBIAN.md
 
-> Note: This lives in the org `.github` repo by request, but this repo’s README indicates product/architecture docs usually belong in the relevant product repository (e.g., `installer/` or `installer-iso/`). If we want to align with that, we can relocate this spec later.
+> Note: This is a cross-repo spec in the docs repository. Repo-specific implementation details should live in their owning repos (e.g., `installer/` or `installer-iso/`).
 
 ## Goal
 Build a TruthDB installer ISO that, when booted on a UEFI machine, installs a minimal Debian system onto an eligible disk and reboots into that Debian system.

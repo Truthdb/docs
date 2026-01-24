@@ -1,13 +1,9 @@
-# In here is the day to day documentation to guide development.
+# Development
 
-- Architecture
-- Requirements
-- Agents communication
-- Interfaces & invariants
-- Data dictionary
-- Decisions
-- Discussion
-- Goals 
-- Non goals
-- Open questions
-- Status + date
+Day-to-day engineering documentation.
+
+## Navigation
+
+- [Architecture](architecture/README.md)
+- [Specs](specs/README.md)
+- [Decisions (ADRs)](decisions/README.md)

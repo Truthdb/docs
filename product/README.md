@@ -1,5 +1,8 @@
-# The is the product documentation
-- Installation guide
-- User's manual
-- Examples
-- 
+# Product
+
+User-facing documentation.
+
+## Navigation
+
+- [Installation](installation/README.md)
+- [Concepts](concepts/README.md)
