@@ -215,8 +215,9 @@ If any of those are missing, `installer-iso` refuses to build a mixed-version IS
 
 ## Where to add new docs/specs
 
-- Org-wide specs and cross-repo design notes: this repo under `development/specs/`.
+- Cross-repo specs and ADRs: this repository under `development/specs/` and `development/decisions/`.
 - Repo-specific docs: keep them in the repo that owns the behavior.
+- Org-level GitHub configuration and community health docs: the `.github/` repo.
 
 ## Pointers / known constraints
 

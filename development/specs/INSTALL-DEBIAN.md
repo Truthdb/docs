@@ -1,6 +1,6 @@
 # INSTALL-DEBIAN.md
 
-This spec describes the current installer ISO behavior and the intended “offline Debian” install approach.
+> Note: This is a cross-repo spec in the docs repository. Repo-specific implementation details should live in their owning repos (e.g., `installer/` or `installer-iso/`).
 
 ## Goal
 Build a TruthDB installer ISO that, when booted on a UEFI machine, installs a minimal Debian system onto an eligible disk and reboots into that Debian system.

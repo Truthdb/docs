@@ -2,11 +2,7 @@
 
 User-facing documentation.
 
-- Installation guide
-- User manual
-- Examples
+## Navigation
 
-Start with:
-
-- `use-cases.md`
-- `concepts/how-truthdb-differs-from-postgres.md`
+- [Installation](installation/README.md)
+- [Concepts](concepts/README.md)
