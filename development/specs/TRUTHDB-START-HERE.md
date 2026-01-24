@@ -50,7 +50,7 @@ The payload includes:
 - core userspace (`systemd-sysv`, `iproute2`, etc.)
 - the TruthDB binary + `truthdb.service`, enabled for `multi-user.target`
 
-See also: `specs/INSTALL-DEBIAN.md`.
+See also: `INSTALL-DEBIAN.md`.
 
 ## Versioning and releases (important)
 
@@ -223,4 +223,4 @@ If any of those are missing, `installer-iso` refuses to build a mixed-version IS
 
 - The installer ISO is currently **UEFI-first** by design.
 - Release workflows assume **amd64** for the Debian payload.
-- `truthdb` and `orchestrator` are currently early-stage skeletons.
+- Some components are still early-stage, but releases and version-locking are real and enforced by CI.
