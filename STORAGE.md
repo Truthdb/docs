@@ -225,7 +225,61 @@ If crash happens before superblock write, WAL may contain entries not yet commit
 
 ---
 
-## 12.1 Performance considerations
+## 12.1 Ingestion → storage write path (v0)
+
+This section defines how incoming messages become durable storage writes.
+
+### Write path
+
+1) **Ingress** (network/task) validates request and enqueues a write job.
+2) **Batcher** groups jobs by size/time (hybrid) and assigns a `batch_id`.
+3) **IO writer** (single thread/task) performs:
+  - write new data/metadata pages (COW)
+  - append WAL `record` entries for the batch
+  - append WAL `commit`
+  - update superblock
+
+### Durability modes (v0)
+
+- **async**: no fsync; OS buffers control durability.
+- **sync**: fsync per batch.
+- **group_sync**: fsync after **N=32** batches or **T=5ms**, whichever comes first.
+
+### Backpressure
+
+- If WAL ring is near full, ingress must apply backpressure.
+- Hybrid: **block up to a timeout**, then reject with a retryable error until snapshot frees space.
+
+---
+
+## 12.2 Observability (storage + network)
+
+Observability must cover both storage IO and the ingress/network layer so operators can diagnose saturation and latency.
+
+### Storage metrics/logs
+
+- WAL ring usage (% full), head/tail positions
+- fsync latency (p50/p95/p99)
+- batch sizes and batch flush intervals
+- snapshot duration and frequency
+- allocator bitmap occupancy and fragmentation hints
+- backpressure events (count, duration)
+
+### Network/ingress metrics
+
+- request rate, queue depth, and enqueue latency
+- rejected requests (backpressure timeouts)
+- end-to-end write latency (ingress → commit)
+
+### Tracing/logging guidelines
+
+- Structured logs with `batch_id`, `commit_seq`, and request IDs
+- Trace spans for: enqueue → batch → WAL write → fsync → commit
+- Error logs for WAL corruption detection and recovery stop points
+
+---
+
+## 12.3 Performance considerations
 
 - **Single-writer throughput** depends on batching. Larger batches reduce fsync cost per entry.
 - **Preallocation** improves predictability by avoiding file growth and fragmentation.
@@ -247,7 +301,7 @@ Risks to watch:
 
 ---
 
-## 12.2 Security considerations
+## 12.4 Security considerations
 
 - **Checksums** (header + payload) prevent silent corruption from propagating.
 - **Dual superblocks** reduce risk of accepting torn metadata.
@@ -357,4 +411,21 @@ None currently.
 4) Implement WAL ring append + checksum + required footer verification.
 5) Implement recovery scan to last valid commit.
 6) Add minimal tests for header/superblock/WAL parsing.
+7) Implement allocator bitmap operations (alloc/free, persist bitmap pages).
+8) Implement snapshot creation + retention (hybrid cadence).
+9) Wire ingestion path to storage writer (batching + group_sync).
+10) Add basic metrics/logs for WAL usage, snapshot cadence, backpressure events.
+
+---
+
+## 18. Benchmarking
+
+Benchmarking is required to validate and tune:
+
+- batch sizes and group_sync defaults (N, T)
+- WAL ring size ratios
+- snapshot cadence thresholds
+- allocator performance under churn
+
+Use representative workloads (small writes, bursty streams, mixed read/write) and capture latency percentiles and throughput.
 
