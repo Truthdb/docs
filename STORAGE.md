@@ -332,16 +332,16 @@ All offsets are **page-aligned (4K)**. Sizes shown are defaults and can be adjus
 - **Superblock A**: 1 page
 - **Superblock B**: 1 page
 
-### 14.2 Regions (default sizes within 10GB file)
+### 14.2 Regions (default sizes within 10GiB file)
 
-Let total file size = 10GB.
+Let total file size = 10GiB (GiB = 2^30 bytes).
 
-- **WAL ring**: 5% (min 256MB, max 1GB). For 10GB: **512MB**.
-- **Data region**: 66% (~6.6GB)
-- **Metadata region**: 8% (0.8GB)
-- **Allocator bitmap region**: 2% (0.2GB)
-- **Snapshot region**: 2% (0.2GB)
-- **Reserved/expansion**: 17% (~1.7GB)
+- **WAL ring**: 5% (min 256MiB, max 1GiB). For 10GiB: **512MiB**.
+- **Data region**: 66% (~6.6GiB)
+- **Metadata region**: 8% (0.8GiB)
+- **Allocator bitmap region**: 2% (0.2GiB)
+- **Snapshot region**: 2% (0.2GiB)
+- **Reserved/expansion**: 17% (~1.7GiB)
 
 These ratios are defaults and **configurable at file creation**.
 
@@ -368,19 +368,24 @@ These ratios are defaults and **configurable at file creation**.
 
 The storage subsystem is configured at startup. Suggested keys:
 
-- `storage.path` — file path for the single storage file
-- `storage.size_gb` — preallocated file size (default 10)
-- `storage.page_size` — fixed at 4096
-- `storage.wal_ratio` — default 0.05 (min 256MB, max 1GB)
-- `storage.metadata_ratio` — default 0.08
-- `storage.snapshot_ratio` — default 0.02
-- `storage.allocator_ratio` — default 0.02
-- `storage.reserved_ratio` — default 0.17
-- `storage.group_sync_batches` — default 32
-- `storage.group_sync_ms` — default 5
-- `storage.backpressure_timeout_ms` — timeout before reject
-- `storage.snapshot_min_interval_ms` — time-based cadence floor
-- `storage.snapshot_wal_threshold` — usage threshold for snapshot trigger
+- `storage.path` — file path for the single storage file (default: `truth.db`, relative to systemd `StateDirectory`)
+- `storage.size_gib` — preallocated file size (default 10). Total capacity for all regions.
+- `storage.wal_ratio` — fraction of total size reserved for WAL ring (default 0.05; min 256MiB, max 1GiB).
+- `storage.metadata_ratio` — fraction reserved for metadata pages (default 0.08).
+- `storage.snapshot_ratio` — fraction reserved for snapshot roots/history (default 0.02).
+- `storage.allocator_ratio` — fraction reserved for allocator bitmap pages (default 0.02).
+- `storage.reserved_ratio` — fraction held in reserve for future format growth (default 0.17).
+- `storage.group_sync_batches` — max batches per fsync in group_sync (default 32).
+- `storage.group_sync_ms` — max time to wait before fsync in group_sync (default 5 ms).
+- `storage.backpressure_timeout_ms` — max time to block before rejecting writes (default 50 ms).
+- `storage.snapshot_min_interval_ms` — minimum time between snapshots (default 1000 ms).
+- `storage.snapshot_wal_threshold` — trigger snapshot when WAL usage exceeds this fraction (default 0.7).
+
+---
+
+## 14.6 Fixed constants (v0)
+
+- Page size: **4096 bytes** (fixed, not configurable)
 
 ---
 
