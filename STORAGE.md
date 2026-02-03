@@ -364,6 +364,26 @@ These ratios are defaults and **configurable at file creation**.
 
 ---
 
+## 14.5 Storage configuration (v0)
+
+The storage subsystem is configured at startup. Suggested keys:
+
+- `storage.path` — file path for the single storage file
+- `storage.size_gb` — preallocated file size (default 10)
+- `storage.page_size` — fixed at 4096
+- `storage.wal_ratio` — default 0.05 (min 256MB, max 1GB)
+- `storage.metadata_ratio` — default 0.08
+- `storage.snapshot_ratio` — default 0.02
+- `storage.allocator_ratio` — default 0.02
+- `storage.reserved_ratio` — default 0.17
+- `storage.group_sync_batches` — default 32
+- `storage.group_sync_ms` — default 5
+- `storage.backpressure_timeout_ms` — timeout before reject
+- `storage.snapshot_min_interval_ms` — time-based cadence floor
+- `storage.snapshot_wal_threshold` — usage threshold for snapshot trigger
+
+---
+
 ## 15. WAL payload schema (v0)
 
 The WAL entry header/footer is fixed as defined in section 7. The **payload** depends on `entry_type`.
