@@ -125,6 +125,7 @@ Two copies of a small “commit record” are kept. Only one is active.
 ## 7. WAL region
 
 The WAL is the authoritative ordered log of all state changes. In a fixed-size file, the WAL is a **ring buffer** with a configurable capacity.
+WAL entries are packed with **8-byte alignment** (padding with zeroes).
 
 ### 7.1 Entry format (v0)
 - Entry header:
@@ -386,6 +387,25 @@ The storage subsystem is configured at startup. Suggested keys:
 ## 14.6 Fixed constants (v0)
 
 - Page size: **4096 bytes** (fixed, not configurable)
+
+---
+
+## 14.7 Low-level format rules (v0)
+
+- **Endianness**: all numeric fields are **little-endian**.
+- **Magic**: 8 bytes `TRUTHDB\0` (hex: `54 52 55 54 48 44 42 00`).
+- **Version**: initial on-disk version = **1**.
+
+### Checksum coverage
+
+- `header_checksum`: checksum of the entire header struct with the checksum field zeroed. Any padding bytes must be zeroed before checksum.
+- `superblock.checksum`: checksum of the entire superblock struct with the checksum field zeroed. Any padding bytes must be zeroed before checksum.
+- WAL `header_crc`: checksum of header fields **excluding** `header_crc` and `payload_crc` (covers `entry_type`, `entry_version`, `payload_len`, `seq_no`, `logical_ts`).
+
+### Superblock selection
+
+- Choose the valid superblock with the **highest `generation`**.
+- If generations are equal, use `active` as a tie-breaker (`0 = A`, `1 = B`).
 
 ---
 
