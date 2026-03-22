@@ -35,5 +35,5 @@ The TruthDB WAL is the **authoritative source of truth**.
 
 ## Related
 
-- Specs: `development/specs/WAL.md`
+- Specs: `../specs/WAL.md`
 - Comparisons: PostgreSQL WAL vs TruthDB; TigerBeetle WAL comparison (in gptinput)

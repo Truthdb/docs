@@ -40,5 +40,5 @@ Implications:
 
 See:
 
-- `development/specs/WAL.md`
-- `development/decisions/ADR-0001-wal-is-source-of-truth.md`
+- `../../development/specs/WAL.md`
+- `../../development/decisions/ADR-0001-wal-is-source-of-truth.md`
