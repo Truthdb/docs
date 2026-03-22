@@ -11,7 +11,7 @@ If you only read one doc to get productive quickly, read this first.
 | `truthdb/`                        | Main TruthDB service (Tokio app) + systemd unit                                         | `truthdb` binary + `truthdb.service` release asset                    |
 | `installer/`                      | Initramfs installer app (Rust, console-only installer that partitions/formats/installs) | `truthdb-installer` (x86_64 musl) release asset                       |
 | `installer-kernel/`               | Linux kernel config used for the installer boot environment                             | `BOOTX64.EFI` (kernel bzImage built with EFI stub) release asset      |
-| `installer-kernel-builder-image/` | Container image used to build the installer kernel reproducibly in CI                   | GHCR image `ghcr.io/truthdb/truthdb-installer-kernel-builder-image:*` |
+| `installer-kernel-builder-image/` | Container image used to build the installer kernel in CI                                | GHCR image `ghcr.io/truthdb/truthdb-installer-kernel-builder-image:*` |
 | `installer-iso/`                  | Produces the bootable installer ISO and embeds an offline Debian payload                | `truthdb-installer-vX.Y.Z.iso` release asset                          |
 | `orchestrator/`                   | Admin/developer CLI for TruthDB org (automates tagging + waits for release assets)      | `orchestrator` release asset                                          |
 | `website/`                        | Public website (Vue + Vite)                                                             | `dist/` tarball release asset                                         |
@@ -74,6 +74,7 @@ It does **not** version-lock those dependencies to the `installer-iso` tag. In p
   - builds the Debian payload via `debootstrap` (bookworm/amd64)
   - embeds TruthDB runtime artifacts from the latest published `truthdb` release available at build time
   - downloads the latest published `installer` and `installer-kernel` artifacts available at build time
+  - verifies the published checksums for `truthdb`, `installer`, and `installer-kernel` before embedding them
   - builds initramfs including required host-install tools (`wipefs`, `sfdisk`, `mkfs.*`, `tar`, `zstd`, `efibootmgr`, `bootctl` and systemd-boot EFI binaries)
   - builds a UKI using `ukify`
   - generates an ISO via `xorriso`
@@ -90,7 +91,7 @@ Key files: `.github/workflows/ci.yml`, `.github/workflows/release.yml`
 
 ### `installer-kernel`
 - CI: validates the config and builds kernel artifacts.
-- Release: builds the kernel inside the kernel builder image and uploads `BOOTX64.EFI`.
+- Release: builds the kernel inside the kernel builder image and uploads `BOOTX64.EFI` plus `BOOTX64.EFI.sha256`.
 
 Key files: `.github/workflows/release.yml`, `truthdb-installer-kernel.config`
 
@@ -175,7 +176,9 @@ If you need a particular set of artifacts in the ISO, release those repos first 
 2. **Release the installer kernel**
    - Repo: `installer-kernel`
    - Tag: `vX.Y.Z`
-   - Verify release assets include: `BOOTX64.EFI`
+   - Verify release assets include:
+     - `BOOTX64.EFI`
+     - `BOOTX64.EFI.sha256`
 
 3. **Release the TruthDB service**
    - Repo: `truthdb`
