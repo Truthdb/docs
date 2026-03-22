@@ -10,7 +10,7 @@ It is intentionally split into:
 - **Agreed direction** (what we’re building toward)
 - **Current implementation** (what the repos do now)
 
-For the concrete Debian-on-disk install steps, see `development/specs/INSTALL-DEBIAN.md`.
+For the concrete Debian-on-disk install steps, see `INSTALL-DEBIAN.md`.
 
 ## Agreed direction (from prior agreements)
 
@@ -60,7 +60,7 @@ Status: partly aspirational. The current pipeline is focused on delivering an in
 - `installer/`: Rust installer app (console-only today).
 - `installer-kernel/`: kernel config and release artifact used to boot the installer environment.
 - `installer-kernel-builder-image/`: CI builder image for the kernel.
-- `installer-iso/`: assembles initramfs tooling + Debian payload + UKI/ISO; enforces version-locking.
+- `installer-iso/`: assembles initramfs tooling + Debian payload + UKI/ISO using the latest published dependency releases available at build time.
 
 ### Boot chain (current)
 
@@ -76,7 +76,7 @@ Status: partly aspirational. The current pipeline is focused on delivering an in
 
 ## Design invariants to keep stable
 
-- Version-locking: the ISO release consumes matching tags across kernel/installer/truthdb.
+- Dependency selection: the ISO release consumes the latest published kernel/installer/truthdb releases available when it runs.
 - Offline install: no network required during install; Debian payload is embedded.
 - Disk safety: no “pick first disk” behavior without explicit design decision.
 

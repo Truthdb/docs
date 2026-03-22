@@ -15,7 +15,8 @@ If you only read one doc to get productive quickly, read this first.
 | `installer-iso/`                  | Produces the bootable installer ISO and embeds an offline Debian payload                | `truthdb-installer-vX.Y.Z.iso` release asset                          |
 | `orchestrator/`                   | Admin/developer CLI for TruthDB org (automates tagging + waits for release assets)      | `orchestrator` release asset                                          |
 | `website/`                        | Public website (Vue + Vite)                                                             | `dist/` tarball release asset                                         |
-| `.github/`                        | Org-level GitHub configuration and shared docs/specs                                    | Community health docs + specs                                         |
+| `docs/`                           | Historical and supporting documentation                                                 | Markdown documentation                                                |
+| `.github/`                        | Org-level GitHub configuration, templates, and community health docs                    | Templates + community health docs                                     |
 
 ## How the installer ISO actually boots and installs
 
@@ -56,14 +57,14 @@ See also: `INSTALL-DEBIAN.md`.
 
 Most repos publish releases when you push a Git tag like `vX.Y.Z`.
 
-### Version locking
+### Installer ISO dependency selection
 
-The `installer-iso` release workflow enforces *same-version* inputs:
-- It downloads `truthdb` release `vX.Y.Z` and embeds it into the Debian payload.
-- It downloads `installer` release `vX.Y.Z` as the initramfs installer binary.
-- It downloads `installer-kernel` release `vX.Y.Z` as the kernel input for the UKI.
+The `installer-iso` release workflow uses the **latest published** releases from:
+- `truthdb`
+- `installer`
+- `installer-kernel`
 
-If any matching release is missing, the ISO build fails rather than mixing versions.
+It does **not** version-lock those dependencies to the `installer-iso` tag. In practice, this means you should publish the desired dependency releases first and only tag `installer-iso` once those releases are available as the latest ones on GitHub.
 
 ## Pipelines (what runs in CI vs what’s just for local use)
 
@@ -71,7 +72,8 @@ If any matching release is missing, the ISO build fails rather than mixing versi
 - CI workflow builds a smoke-test ISO using the **latest** released kernel + installer (and uses placeholders if releases are missing).
 - Release workflow (tagged) does the “real” work:
   - builds the Debian payload via `debootstrap` (bookworm/amd64)
-  - embeds TruthDB runtime artifacts from the matching `truthdb` release
+  - embeds TruthDB runtime artifacts from the latest published `truthdb` release available at build time
+  - downloads the latest published `installer` and `installer-kernel` artifacts available at build time
   - builds initramfs including required host-install tools (`wipefs`, `sfdisk`, `mkfs.*`, `tar`, `zstd`, `efibootmgr`, `bootctl` and systemd-boot EFI binaries)
   - builds a UKI using `ukify`
   - generates an ISO via `xorriso`
@@ -153,14 +155,14 @@ For local experimentation, `installer-iso/build_and_run.sh` and `installer-iso/r
 
 TruthDB releases are tag-driven: pushing a tag like `vX.Y.Z` triggers release workflows in most repos.
 
-### What must match versions
+### What `installer-iso` consumes
 
-`installer-iso` release builds are intentionally strict and require matching tags to exist:
-- `Truthdb/truthdb` tag `vX.Y.Z` (provides `truthdb-vX.Y.Z-x86_64-linux-gnu.tar.gz`)
-- `Truthdb/installer` tag `vX.Y.Z` (provides `truthdb-installer-vX.Y.Z-x86_64-linux-musl.tar.gz`)
-- `Truthdb/installer-kernel` tag `vX.Y.Z` (provides `BOOTX64.EFI`)
+`installer-iso` release builds consume whatever GitHub currently reports as the latest published releases for:
+- `Truthdb/truthdb`
+- `Truthdb/installer`
+- `Truthdb/installer-kernel`
 
-If any of those are missing, `installer-iso` refuses to build a mixed-version ISO.
+If you need a particular set of artifacts in the ISO, release those repos first and verify they are the latest published releases before tagging `installer-iso`.
 
 ### Recommended tag order (to ship a bootable ISO)
 
@@ -192,6 +194,7 @@ If any of those are missing, `installer-iso` refuses to build a mixed-version IS
 5. **Release the ISO**
    - Repo: `installer-iso`
    - Tag: `vX.Y.Z`
+   - Note: the build pulls the latest published `truthdb`, `installer`, and `installer-kernel` releases at that moment
    - Verify release assets include:
      - `truthdb-installer-vX.Y.Z.iso`
      - `truthdb-installer-vX.Y.Z.iso.sha256`
@@ -213,14 +216,14 @@ If any of those are missing, `installer-iso` refuses to build a mixed-version IS
   - DHCP brings up networking on first boot.
 
 
-## Where to add new docs/specs
+## Where to add new docs
 
-- Cross-repo specs and ADRs: this repository under `development/specs/` and `development/decisions/`.
 - Repo-specific docs: keep them in the repo that owns the behavior.
+- Shared or historical documentation: the `docs/` repo.
 - Org-level GitHub configuration and community health docs: the `.github/` repo.
 
 ## Pointers / known constraints
 
 - The installer ISO is currently **UEFI-first** by design.
 - Release workflows assume **amd64** for the Debian payload.
-- Some components are still early-stage, but releases and version-locking are real and enforced by CI.
+- Some components are still early-stage, but the release workflows are real and operational.

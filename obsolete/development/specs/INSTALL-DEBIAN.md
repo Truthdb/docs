@@ -361,7 +361,7 @@ This repo primarily provides the kernel artifact used in the ISO build (`BOOTX64
 ### `installer-iso/`
 - Build the Debian rootfs payload and embed it into initramfs at `/payload/debian-minbase-amd64-bookworm.tar.zst`.
 - Copy required external install tools into initramfs (partitioning/filesystems/mount/tar+zstd/chroot/efibootmgr/systemd-boot EFI bits).
-- Keep strict release coupling between kernel + installer + payload + truthdb artifacts (same version).
+- Consume the latest published kernel + installer + TruthDB release artifacts available when the ISO workflow runs.
 
 ## Payload Placement
 For MVP, the payload lives **inside initramfs**.
@@ -385,4 +385,3 @@ Follow-up options (not required for MVP):
   - `bookworm` pinned, or track `stable`?
 - Disk selection safety:
   - require an explicit kernel cmdline flag to allow destructive install?
-

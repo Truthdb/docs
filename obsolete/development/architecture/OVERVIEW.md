@@ -51,7 +51,7 @@ The exact layout is a spec-level decision and should be aligned with the impleme
 - Consider direct IO where practical.
 - Avoid “accidental semantics” from generic async runtimes in the storage core.
 
-See: `development/decisions/ADR-0002-io-strategy.md`.
+See: `../decisions/ADR-0002-io-strategy.md`.
 
 ## Compute model (agreed direction)
 
@@ -91,8 +91,8 @@ Current implementation:
 
 See:
 
-- `development/specs/INSTALL-DEBIAN.md`
-- `development/specs/INSTALLER-BOOT-AND-UX.md`
+- `../specs/INSTALL-DEBIAN.md`
+- `../specs/INSTALLER-BOOT-AND-UX.md`
 
 ## Current implementation notes (what exists today)
 
@@ -100,9 +100,9 @@ TruthDB currently exists as:
 
 - a Rust service (`truthdb/`) running under systemd
 - an installer chain split across repos (`installer/`, `installer-kernel/`, `installer-iso/`)
-- an org release pipeline that version-locks ISO inputs by tag
+- an org release pipeline that builds installer ISOs from the latest published dependency releases
 
-For authoritative “what happens during install”, prefer the specs under `development/specs/` and the build workflows in the code repos.
+For authoritative “what happens during install”, prefer the build workflows in the code repos. Historical installer docs remain under `../specs/`.
 
 ## Open questions (to turn into specs/ADRs)
 
