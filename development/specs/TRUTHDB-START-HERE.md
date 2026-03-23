@@ -22,12 +22,13 @@ If you only read one doc to get productive quickly, read this first.
 
 ### Boot chain (current design)
 
-1. **UEFI firmware** boots the ISO.
-2. The ISO contains a **UKI (Unified Kernel Image)** written as `EFI/BOOT/BOOTX64.EFI` inside an ESP FAT image (`efi.img`).
-3. That UKI contains:
-   - the Linux kernel built from `installer-kernel/` config (`BOOTX64.EFI` in kernel releases)
+1. **Firmware** boots the ISO through `GRUB`.
+2. `GRUB` loads:
+   - the Linux installer kernel built from `installer-kernel/` config (currently fetched from the `BOOTX64.EFI` kernel release asset)
    - an initramfs built by `installer-iso` release workflow
-4. `busybox init` starts `truthdb-installer` (the installer app).
+3. The initramfs starts a small custom `/init` flow and launches `truthdb-installer`.
+   - Current default path: installer runs on the active console with kernel log noise suppressed as much as possible.
+   - Optional GRUB entry: dedicated-VT mode can still be selected explicitly for testing.
 5. The installer app:
    - enumerates disks
    - partitions GPT (ESP + root)
@@ -72,16 +73,20 @@ It does **not** version-lock those dependencies to the `installer-iso` tag. In p
 - CI workflow builds a smoke-test ISO using the **latest** released kernel + installer (and uses placeholders if releases are missing).
 - Release workflow (tagged) does the “real” work:
   - builds the Debian payload via `debootstrap` (bookworm/amd64)
-  - embeds TruthDB runtime artifacts from the latest published `truthdb` release available at build time
+  - uses the shared `build_rootfs_payload.sh` helper in release mode to embed TruthDB runtime artifacts from the latest published `truthdb` release available at build time
   - downloads the latest published `installer` and `installer-kernel` artifacts available at build time
   - verifies the published checksums for `truthdb`, `installer`, and `installer-kernel` before embedding them
   - builds initramfs including required host-install tools (`wipefs`, `sfdisk`, `mkfs.*`, `tar`, `zstd`, `efibootmgr`, `bootctl` and systemd-boot EFI binaries)
-  - builds a UKI using `ukify`
-  - generates an ISO via `xorriso`
+  - assembles a `GRUB`-based installer ISO with normal, safe-graphics, debug, serial-console, and rescue entries
+  - generates a BIOS+UEFI-capable ISO via `grub-mkrescue`
 
 Key file: `.github/workflows/release.yml`
 
-Note: `build_and_run.sh` is primarily a local reproduction helper; the authoritative build steps for releases are in the workflow.
+Note: local builds now have two explicit modes:
+- `INPUT_MODE=dev`: build local `truthdb` + `installer`, build payload locally, and optionally override the kernel with `KERNEL_SRC`
+- `INPUT_MODE=release`: use published `truthdb` + `installer` + `installer-kernel` artifacts while still running locally
+
+The release workflow remains authoritative, but local `INPUT_MODE=release` now uses the same payload-builder (`build_rootfs_payload.sh`) and ISO assembler (`build_iso.sh`) as the tagged workflow.
 
 ### `installer`
 - CI: `fmt`, `clippy`, `cargo test` (musl), builds the musl release binary.
@@ -148,9 +153,16 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 ### Build ISO locally (developer workflow)
 
-The most accurate “build like releases” reference is `installer-iso/.github/workflows/release.yml`.
+Recommended entry points:
 
-For local experimentation, `installer-iso/build_and_run.sh` and `installer-iso/run_container.sh` can be used, but they may not include all steps from the release workflow.
+- `installer-iso/build_in_container.sh`
+  - default: `INPUT_MODE=dev`
+  - release-like local build: `INPUT_MODE=release ./build_in_container.sh`
+- `installer-kernel/build_iso_with_local_kernel.sh`
+  - builds a local kernel first, then forwards into `installer-iso/build_in_container.sh`
+  - supports `INPUT_MODE=dev` and `INPUT_MODE=release`
+
+The most accurate local “build like releases” path is now `INPUT_MODE=release ./build_in_container.sh`, because it uses the same shared payload-builder and ISO-assembly scripts as the release workflow.
 
 ## Release checklist (recommended)
 
