@@ -88,6 +88,7 @@ Current implementation:
 
 - The project ships a UEFI-bootable installer ISO built by the `installer-iso` pipeline.
 - The installer is currently console-only (not a graphical UI).
+- Local installer-iso builds now have explicit `dev` and `release` input modes, while tagged releases remain the authoritative path.
 
 See:
 
@@ -101,6 +102,7 @@ TruthDB currently exists as:
 - a Rust service (`truthdb/`) running under systemd
 - an installer chain split across repos (`installer/`, `installer-kernel/`, `installer-iso/`)
 - an org release pipeline that builds installer ISOs from the latest published dependency releases
+- local containerized helper scripts that can either iterate on workspace artifacts or approximate the release input set
 
 For authoritative “what happens during install”, prefer the build workflows in the code repos. Historical installer docs remain under `../specs/`.
 

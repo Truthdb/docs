@@ -362,6 +362,7 @@ This repo primarily provides the kernel artifact used in the ISO build (`BOOTX64
 - Build the Debian rootfs payload and embed it into initramfs at `/payload/debian-minbase-amd64-bookworm.tar.zst`.
 - Copy required external install tools into initramfs (partitioning/filesystems/mount/tar+zstd/chroot/efibootmgr/systemd-boot EFI bits).
 - Consume the latest published kernel + installer + TruthDB release artifacts available when the ISO workflow runs.
+- Current implementation note: the release workflow and local `INPUT_MODE=release` builds both use shared helper scripts (`build_rootfs_payload.sh` and `build_iso.sh`). Local `INPUT_MODE=dev` uses the same helpers but can feed them locally built `truthdb` / `installer` artifacts.
 
 ## Payload Placement
 For MVP, the payload lives **inside initramfs**.

@@ -60,13 +60,16 @@ Status: partly aspirational. The current pipeline is focused on delivering an in
 - `installer/`: Rust installer app (console-only today).
 - `installer-kernel/`: kernel config and release artifact used to boot the installer environment.
 - `installer-kernel-builder-image/`: CI builder image for the kernel.
-- `installer-iso/`: assembles initramfs tooling + Debian payload + UKI/ISO using the latest published dependency releases available at build time.
+- `installer-iso/`: assembles initramfs tooling + Debian payload + a `GRUB`-based installer ISO using the latest published dependency releases available at build time.
 
 ### Boot chain (current)
 
-- ISO contains an ESP image with `EFI/BOOT/BOOTX64.EFI`.
-- The ISO boot uses a UKI-style artifact assembled in CI (kernel + initramfs + cmdline).
-- `truthdb-installer` runs in initramfs and performs the installation.
+- ISO boots through `GRUB`.
+- `GRUB` loads the installer kernel plus initramfs.
+- A custom initramfs `/init` script launches `truthdb-installer`.
+  - Default: active console path with reduced kernel log noise.
+  - Optional: dedicated-VT mode through a separate GRUB entry.
+- The installer still runs in initramfs and performs the installation.
 
 ### UX (current)
 
@@ -80,9 +83,16 @@ Status: partly aspirational. The current pipeline is focused on delivering an in
 - Offline install: no network required during install; Debian payload is embedded.
 - Disk safety: no “pick first disk” behavior without explicit design decision.
 
+## Local Build Modes (current)
+
+- `installer-iso` local builds now expose two explicit modes:
+  - `INPUT_MODE=dev`: build local `truthdb` and `installer`, build the Debian payload locally, download `installer-kernel` unless `KERNEL_SRC` is provided
+  - `INPUT_MODE=release`: download published `truthdb`, `installer`, and `installer-kernel` artifacts
+- Both modes use the same `build_rootfs_payload.sh` and `build_iso.sh` scripts; the difference is the source of the inputs.
+
 ## Open questions / future specs
 
 - Define the desired “graphical installer UI” scope (framebuffer vs DRM/KMS, fonts/assets, input model).
-- Decide whether a minimal UEFI loader is actually needed once UKI is stable.
+- Decide whether direct UKI boot should remain as an optional debug/recovery path or whether `GRUB` should stay the only installer ISO boot path.
 - Define “runtime kernel” scope vs “installer kernel” scope.
 - Define log export/diagnostics UX for failures.
