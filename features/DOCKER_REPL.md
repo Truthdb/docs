@@ -132,6 +132,8 @@ Recommended interface:
 ./scripts/docker_repl.sh --persist
 ./scripts/docker_repl.sh --ephemeral
 ./scripts/docker_repl.sh --reset-data
+./scripts/docker_repl.sh --unconfined-seccomp
+./scripts/docker_repl.sh --confined-seccomp
 ```
 
 Behavior:
@@ -139,6 +141,8 @@ Behavior:
 - persisted mode uses a named Docker volume
 - ephemeral mode uses disposable container-local storage
 - `--reset-data` deletes the persistent named volume before launch
+- `--unconfined-seccomp` runs the container without Docker's default seccomp profile
+- `--confined-seccomp` forces the default Docker seccomp profile
 
 Default behavior:
 
@@ -173,9 +177,13 @@ Responsibilities:
 
 - build or locate the Docker image
 - launch the container with `--rm -it --init`
-- default to `linux/amd64` so the Docker REPL matches the existing CI/release architecture
+- default to the host Linux architecture:
+  - `linux/amd64` on x86_64 hosts
+  - `linux/arm64` on arm64 hosts
 - mount persistent state volume
 - pass `STATE_DIRECTORY=/data`
+- on macOS, automatically pass `--security-opt seccomp=unconfined` for Docker Desktop `io_uring` support
+- allow explicit override back to the default seccomp profile
 - optionally pass through extra flags later
 
 Location:
@@ -190,9 +198,17 @@ The Docker REPL is also the preferred runtime verification path for TruthDB deve
 If an engineer or agent needs to verify live `truthdb` / `truthdb-cli` behavior, that verification should default to:
 
 - Docker
-- `linux/amd64`
+- Linux on a supported architecture:
+  - `linux/amd64`
+  - `linux/arm64`
 
-Host-native macOS runs may still be useful for compilation or narrow debugging, but they should not be treated as authoritative runtime validation for TruthDB behavior.
+Host-native macOS builds and runs should not be used for TruthDB runtime work.
+
+For `io_uring` development on Docker Desktop, the REPL may also need:
+
+- `--security-opt seccomp=unconfined`
+
+The launcher should default to that mode on macOS and allow an explicit opt-out with `--confined-seccomp`.
 
 ## Non-Goals
 
