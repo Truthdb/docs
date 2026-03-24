@@ -140,21 +140,33 @@ Key code:
 
 For TruthDB runtime verification, smoke tests, and feature validation:
 
-- prefer `linux/amd64` execution
+- prefer Linux execution on a supported architecture:
+  - `linux/amd64`
+  - `linux/arm64`
 - prefer Docker/containerized runs over host-native macOS runs
-- do not treat host-native macOS execution as authoritative for TruthDB behavior
+- do not build or run `truthdb` / `truthdb-cli` natively on macOS
 
 Reasoning:
 
-- current CI and release artifacts target `x86_64` / `amd64`
-- Docker gives a closer match to the current supported runtime than host-native macOS
+- TruthDB runtime should target Linux rather than host-native macOS
+- Docker gives a closer match to the intended runtime than host-native macOS
 - Linux-specific behavior must be validated in a Linux environment, not inferred from macOS
 
 Practical rule for engineers and agents:
 
-- if a task requires actually running `truthdb` or `truthdb-cli`, run them in `linux/amd64`
+- if a task requires actually building or running `truthdb` or `truthdb-cli`, do it in Linux
+- `linux/amd64` and `linux/arm64` are both acceptable runtime targets
 - use the Docker REPL or another Docker-based path when possible
-- only use host-native execution for limited compile/test convenience, not for authoritative runtime verification
+- do not use host-native macOS builds as a development shortcut for TruthDB runtime work
+
+Important exception for `io_uring` work:
+
+- `io_uring` runtime validation must happen on a Linux kernel
+- `linux/arm64` on Apple Silicon is a valid path if the Linux VM/container runtime exposes `io_uring`
+- even on `linux/arm64`, container security policy can still block `io_uring` with `EPERM`
+- emulated `linux/amd64` containers on macOS can return `ENOSYS` for `io_uring_setup`
+- the Docker REPL auto-enables `seccomp=unconfined` on macOS to get past Docker Desktop's default seccomp block
+- for `io_uring` features, a successful Docker build on macOS is not the same thing as a valid runtime verification
 
 ### Build TruthDB service
 
