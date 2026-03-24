@@ -183,6 +183,17 @@ Location:
 - the launcher should live in the `orchestrator` repo so it is stored in git
 - it should assume `truthdb/` is a sibling repo by default, with an override such as `TRUTHDB_DIR=/path/to/truthdb`
 
+### Verification rule
+
+The Docker REPL is also the preferred runtime verification path for TruthDB development work.
+
+If an engineer or agent needs to verify live `truthdb` / `truthdb-cli` behavior, that verification should default to:
+
+- Docker
+- `linux/amd64`
+
+Host-native macOS runs may still be useful for compilation or narrow debugging, but they should not be treated as authoritative runtime validation for TruthDB behavior.
+
 ## Non-Goals
 
 The first version should not:
