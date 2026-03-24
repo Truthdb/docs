@@ -136,6 +136,26 @@ Key code:
 
 ## Developing locally
 
+### Runtime verification rule
+
+For TruthDB runtime verification, smoke tests, and feature validation:
+
+- prefer `linux/amd64` execution
+- prefer Docker/containerized runs over host-native macOS runs
+- do not treat host-native macOS execution as authoritative for TruthDB behavior
+
+Reasoning:
+
+- current CI and release artifacts target `x86_64` / `amd64`
+- Docker gives a closer match to the current supported runtime than host-native macOS
+- Linux-specific behavior must be validated in a Linux environment, not inferred from macOS
+
+Practical rule for engineers and agents:
+
+- if a task requires actually running `truthdb` or `truthdb-cli`, run them in `linux/amd64`
+- use the Docker REPL or another Docker-based path when possible
+- only use host-native execution for limited compile/test convenience, not for authoritative runtime verification
+
 ### Build TruthDB service
 
 ```bash
