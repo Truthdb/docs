@@ -2,7 +2,7 @@
 
 ## Question 1
 
-Ok, id like you to have a look at this reddit thread: https://www.reddit.com/r/rust/comments/1o0hbtz/walrus_a_1_million_opssec_1_gbs_write_ahead_log/ and be ready to answer questions.
+Ok, id like you to have a look at this reddit thread: <https://www.reddit.com/r/rust/comments/1o0hbtz/walrus_a_1_million_opssec_1_gbs_write_ahead_log/> and be ready to answer questions.
 
 ## Answer 1
 
@@ -10,17 +10,19 @@ I’ve reviewed it and I’m ready.
 
 Main takeaways:
 
-- The core dispute in the thread is not “is it fast?” but “what durability contract does it really provide?” The top criticism is that the original design acknowledged writes before durable completion and relied on `mmap`/background flush behavior in ways that could lose data silently on faults. Source: [Reddit thread](https://www.reddit.com/r/rust/comments/1o0hbtz/walrus_a_1_million_opssec_1_gbs_write_ahead_log/)
-- The author explicitly conceded that, at that point, it was “fast first, durable second,” and said they planned fail-stop handling for flush errors plus an opt-in synchronous write mode and stronger on-disk checks. Source: [Reddit thread](https://www.reddit.com/r/rust/comments/1o0hbtz/walrus_a_1_million_opssec_1_gbs_write_ahead_log/)
-- The repo now appears to have moved beyond that October 2025 post: the current README describes a broader distributed streaming system, `io_uring` support on Linux, dual storage backends, and explicit fsync modes, with the latest release shown as `v0.3.0` on November 27, 2025. Source: [GitHub repo](https://github.com/nubskr/walrus)
+- The core dispute in the thread is not “is it fast?” but “what durability contract does it really provide?” The top criticism is that the original design acknowledged writes before durable completion and relied on `mmap`/background flush behavior in ways that could lose data silently on faults. Source: [Reddit thread](<https://www.reddit.com/r/rust/comments/1o0hbtz/walrus_a_1_million_opssec_1_gbs_write_ahead_log/>)
+- The author explicitly conceded that, at that point, it was “fast first, durable second,” and said they planned fail-stop handling for flush errors plus an opt-in synchronous write mode and stronger on-disk checks. Source: [Reddit thread](<https://www.reddit.com/r/rust/comments/1o0hbtz/walrus_a_1_million_opssec_1_gbs_write_ahead_log/>)
+- The repo now appears to have moved beyond that October 2025 post: the current README describes a broader distributed streaming system, `io_uring` support on Linux, dual storage backends, and explicit fsync modes, with the latest release shown as `v0.3.0` on November 27, 2025. Source: [GitHub repo](<https://github.com/nubskr/walrus>)
 
 One important framing point: the Reddit discussion is mainly about the earlier WAL/durability claims, while the current repo README reflects a later, expanded system. So if you ask me about “Walrus,” I’ll distinguish between:
+
 - the October 2025 Reddit/WAL debate
 - the later repo state shown on GitHub
 
 Sources:
-- https://www.reddit.com/r/rust/comments/1o0hbtz/walrus_a_1_million_opssec_1_gbs_write_ahead_log/
-- https://github.com/nubskr/walrus
+
+- <https://www.reddit.com/r/rust/comments/1o0hbtz/walrus_a_1_million_opssec_1_gbs_write_ahead_log/>
+- <https://github.com/nubskr/walrus>
 
 ## Question 2
 
