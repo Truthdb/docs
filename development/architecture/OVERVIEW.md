@@ -14,14 +14,17 @@ If a section is aspirational, it is labeled as such.
 
 ## What TruthDB is (agreed direction)
 
-TruthDB is a high-performance, WAL-centric, event-sourced data system designed for:
+TruthDB is a high-performance, WAL-centric, **hybrid data system** designed for:
 
 - long-lived state
 - deterministic replay
 - strong durability guarantees
 - predictable performance
+- unified retrieval across structured, full-text, and vector data
 
 It is inspired by systems like TigerBeetle and Kafka (log-first design), but is not a clone.
+
+TruthDB is hybrid by design: a single system that serves as an event store, a search engine, a relational database, and a vector database. Rather than requiring separate infrastructure for each retrieval modality, TruthDB aims to support structured queries, full-text search, and vector similarity (for AI/RAG workloads) under one WAL, one consistency model, and one operational surface.
 
 ## Core principles (agreed direction)
 
@@ -106,6 +109,19 @@ TruthDB currently exists as:
 
 For authoritative “what happens during install”, prefer the build workflows in the code repos. Historical installer docs remain under `../specs/`.
 
+## Vector and embedding support (agreed direction)
+
+TruthDB should natively support dense vector embeddings as a first-class field type, with approximate nearest neighbor (ANN) indexing and similarity search. This enables RAG and AI-assisted retrieval without external vector databases.
+
+Key design points:
+
+- Vectors are stored in the WAL as part of document events, covered by the same durability guarantees.
+- ANN indexes (e.g., HNSW) are derived structures, rebuildable from WAL replay — consistent with the principle that the WAL is the source of truth.
+- Hybrid queries combine vector similarity, full-text relevance, and structured filters in a single request.
+- TruthDB does not generate embeddings; embedding is the client's responsibility. TruthDB stores, indexes, and retrieves vectors.
+
+Status: roadmap (not yet implemented). See: `../../features/VECTOR_DATABASE_AND_RAG.md`.
+
 ## Open questions (to turn into specs/ADRs)
 
 - Exact WAL binary format (framing, commit boundaries, entry types)
@@ -113,3 +129,4 @@ For authoritative “what happens during install”, prefer the build workflows 
 - Replication protocol and what layer owns it
 - Final on-disk layout and how it evolves
 - What becomes part of product-facing guarantees vs internal implementation
+- ANN index algorithm selection (HNSW vs DiskANN vs IVF) and integration with io_uring storage path
