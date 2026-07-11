@@ -57,6 +57,6 @@ TruthDB's intended direction:
 
 See:
 
-- `../../features/VECTOR_DATABASE_AND_RAG.md`
-- `../../development/specs/WAL.md`
-- `../../development/decisions/ADR-0001-wal-is-source-of-truth.md`
+- `VECTOR_DATABASE_AND_RAG.md`
+- `WAL.md`
+- `ADR-0001-wal-is-source-of-truth.md`

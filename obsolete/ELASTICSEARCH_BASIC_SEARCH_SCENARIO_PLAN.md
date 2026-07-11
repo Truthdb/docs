@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes the first TruthDB implementation plan corresponding to the scenario in [ELASTICSEARCH_BASIC_SEARCH_SCENARIO.md](../scenarios/ELASTICSEARCH_BASIC_SEARCH_SCENARIO.md).
+This document describes the first TruthDB implementation plan corresponding to the scenario in [ELASTICSEARCH_BASIC_SEARCH_SCENARIO.md](ELASTICSEARCH_BASIC_SEARCH_SCENARIO.md).
 
 The goal is not to clone Elasticsearch. The goal is to implement the smallest useful TruthDB vertical slice that can perform the same basic workflow:
 
