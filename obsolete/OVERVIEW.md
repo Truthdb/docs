@@ -54,7 +54,7 @@ The exact layout is a spec-level decision and should be aligned with the impleme
 - Consider direct IO where practical.
 - Avoid “accidental semantics” from generic async runtimes in the storage core.
 
-See: `../decisions/ADR-0002-io-strategy.md`.
+See: `ADR-0002-io-strategy.md`.
 
 ## Compute model (agreed direction)
 
@@ -95,8 +95,8 @@ Current implementation:
 
 See:
 
-- `../specs/INSTALL-DEBIAN.md`
-- `../specs/INSTALLER-BOOT-AND-UX.md`
+- `INSTALL-DEBIAN.md`
+- `INSTALLER-BOOT-AND-UX.md`
 
 ## Current implementation notes (what exists today)
 
@@ -107,7 +107,7 @@ TruthDB currently exists as:
 - an org release pipeline that builds installer ISOs from the latest published dependency releases
 - local containerized helper scripts that can either iterate on workspace artifacts or approximate the release input set
 
-For authoritative “what happens during install”, prefer the build workflows in the code repos. Historical installer docs remain under `../specs/`.
+For authoritative “what happens during install”, prefer the build workflows in the code repos. Historical installer docs remain in this directory.
 
 ## Vector and embedding support (agreed direction)
 
@@ -120,7 +120,7 @@ Key design points:
 - Hybrid queries combine vector similarity, full-text relevance, and structured filters in a single request.
 - TruthDB does not generate embeddings; embedding is the client's responsibility. TruthDB stores, indexes, and retrieves vectors.
 
-Status: roadmap (not yet implemented). See: `../../features/VECTOR_DATABASE_AND_RAG.md`.
+Status: roadmap (not yet implemented). See: `VECTOR_DATABASE_AND_RAG.md`.
 
 ## Open questions (to turn into specs/ADRs)
 

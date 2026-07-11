@@ -57,4 +57,4 @@ We may still use Tokio in the overall service, but the storage core should not r
 
 ## Related
 
-- WAL requirements: `../specs/WAL.md`
+- WAL requirements: `WAL.md`
