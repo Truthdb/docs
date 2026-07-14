@@ -98,7 +98,7 @@ The big architectural stage — do it before more SQL piles onto the global mute
 - 🟡 Exit: key-codec order property tests (incl. collation keys); plan goldens; A/B harness (identical results with/without indexes). *(gap: collation-key order tests missing; index keys are binary, not collation sort keys)*
 
 ### Stage 8 — Joins, aggregation, DISTINCT — spill-capable from the start
-- 🟡 `INNER/LEFT/RIGHT/FULL/CROSS JOIN`, comma-FROM, `GROUP BY`/`HAVING`, `COUNT/SUM/AVG/MIN/MAX` (+DISTINCT), `SELECT DISTINCT`, ORDER BY ordinals/expressions, ambiguity errors (209); binder scope stack with T-SQL alias-visibility rules. *(gap: ambiguity emits 207, not 209)*
+- 🟡 `INNER/LEFT/RIGHT/FULL/CROSS JOIN`, comma-FROM, `GROUP BY`/`HAVING`, `COUNT/SUM/AVG/MIN/MAX` (+DISTINCT), `SELECT DISTINCT`, ORDER BY ordinals/expressions, ambiguity errors (209); binder scope stack with T-SQL alias-visibility rules. *(done #74: ambiguity now emits 209)*
 - 🟡 Operators: block nested-loop join; hash join on equijoins (RIGHT→LEFT swap, FULL via matched-bits); hash aggregate; **external merge sort and grace-hash partitioning spilling to temp extents** when the per-query memory budget is exceeded (SQL Server tempdb-spill behavior). Int AVG truncates like T-SQL. Join order as written. *(gap: only naive nested-loop join + in-memory agg/sort — NO hash join, hash aggregate, external sort, grace-hash, or memory budget; "spill-capable" goal unmet)*
 - ✅ Start the hand-rolled **sqllogictest-style runner** (`tests/slt/*.slt`, in-process against `Session::execute_batch`). *(note: drives `Engine::sql_batch`)*
 - 🟡 Exit: NULL-heavy join/agg slt matrices; spill tests (tiny budget forces spill, results identical, temp space reclaimed on restart). *(gap: spill tests absent — no spill mechanism exists)*
@@ -111,7 +111,7 @@ The big architectural stage — do it before more SQL piles onto the global mute
 
 ### Stage 10 — Constraints & ALTER TABLE
 - 🟡 `FOREIGN KEY ... REFERENCES` (NO ACTION), `CHECK` (passes on TRUE or UNKNOWN), named constraints, `ALTER TABLE ADD/DROP CONSTRAINT`, `ALTER TABLE ADD` column (metadata-only when nullable/defaulted), `INSERT ... SELECT`. *(gap: `ALTER TABLE ADD <column>` not implemented — parser defers it)*
-- 🟡 Enforcement in DML executors: FK child probe via parent PK; parent-side probe via child FK index if present else scan (documented cliff). Error 547 with constraint names. Catalog: `sys.foreign_keys`, `sys.check_constraints`, `sys.default_constraints`. *(gap: parent-side probe always scans children — child-FK-index path deferred)*
+- 🟡 Enforcement in DML executors: FK child probe via parent PK; parent-side probe via child FK index if present else scan (documented cliff). Error 547 with constraint names. Catalog: `sys.foreign_keys`, `sys.check_constraints`, `sys.default_constraints`. *(done #76: parent-side probe seeks the child FK index when present, else scans)*
 - 🟡 Exit: constraint slt matrix (NULL-FK skip-enforcement trap included); ALTER + old-row reads; metadata durability. *(gap: ADD-column old-row-read uncovered since ADD column is missing)*
 
 ### Stage 11 — Subqueries, views, variables
@@ -200,24 +200,38 @@ Search WAL events keep `entry_type=1` JSON payloads and existing replay; relatio
 
 *Added 2026-07-14. The stage/bullet marks above (✅ / 🟡 / ❌) were verified bullet-by-bullet against the actual code in `truthdb/` — git history plus a per-stage source audit — not from memory. The plan text is the original **target**; this section records where the shipped build **diverges** from it. Everything through Stage 12 is merged (PRs #43–#70).*
 
+### Follow-up session (2026-07-14, PRs #71–#77)
+
+A gap-closing pass merged seven PRs, each tested and (for the correctness-critical ones) hardened by an adversarial multi-agent review that caught real bugs before merge:
+
+- **#71 — Stage 8 in-memory hash operators.** Hash join for equijoins (order-preserving, NULL-safe, residual-predicate-correct), hash aggregate (was O(n·groups)), hash DISTINCT (was O(n²)). New `rel/hash.rs` hashes numerics by exact canonical rational so cross-type/large-magnitude keys match (review caught an f64-rounding Hash/Eq bug). External-sort/grace-hash **spill still unbuilt** — see the Stage 8 bullet.
+- **#72 — Stage 12 row-level locks.** Point INSERT/UPDATE/DELETE take Table IX + a `Row X(oid, keyhash)`, so different-row point writers run concurrently. Guards (found via review): FK-parent tables and secondary-UNIQUE-index tables keep table locks; character keys need string literals; float keys excluded; the `{S,IX}` lattice join escalates to X (fixes an IX→S dirty-read). Key-range locks (phantom-free SERIALIZABLE) and the sharded/partitioned lock manager remain unbuilt.
+- **#73 — Stage 11 correlated subqueries** (scalar/EXISTS/IN in WHERE, per-row apply; inner-shadows-outer correct).
+- **#74 — Ambiguous-column error 209** (was 207) and **`SCOPE_IDENTITY()`**.
+- **#75 — Stage 11 view-over-view** recursive expansion (32-deep cycle cap) + **`sys.sql_modules`**; lock analysis recurses to nested base tables.
+- **#76 — Stage 10 FK parent-side probe** uses a child index (seek) instead of a full child scan when one exists.
+- **#77 — Stage 7 inline `UNIQUE` constraints** (column- and table-level → unique indexes).
+
+Still open after this session (candidates for the next pass, hardest/most-valuable first): Stage 8 **spill** (external merge sort + grace-hash + per-query memory budget on temp extents — the largest remaining performance item); Stage 12 **key-range locks** + partitioned lock manager; Stage 5 **collation-aware equality** (needs collation threaded into `SqlValue::compare`) and icu4x **sort keys in index keys** (blocked by `icu_collator` 1.5 exposing no public sort-key byte API); Stage 6 **`SET XACT_ABORT`/severity** statement-atomicity (needs statement-level rollback / `SAVE TRAN`); Stage 2 **fuzzy checkpoints**; Stage 9 **`sp_prepare` family** + prepared-statement rebind; Stage 4/6 **TDS Attention** mid-statement abort. `ALTER TABLE ADD column` is **not** a quick item — `decode_row` is strict, so it needs a self-describing row format or a full-table rewrite.
+
 **One-line status:** a working, transactional, concurrent SQL-Server-compatible engine — real ARIES storage/recovery, TDS wire protocol, most of the single-table + join/aggregate SQL surface, and the concurrency scale-out. Stages 1–8 are the core (done, with the gaps below); 9–12 are partial; 13–19 are unstarted.
 
 ### Notable divergences (what the 🟡 marks add up to)
 
-- **Query engine has no hash operators or spill (Stage 8).** Joins, `GROUP BY`, `DISTINCT`, and `ORDER BY` work, but only via naive nested-loop join + fully in-memory aggregation/sort. There is **no** hash join, hash aggregate, external merge sort, grace-hash partitioning, or per-query memory budget — so the plan's "spill-capable from the start" goal is unmet. Large joins/sorts are slow and memory-bound.
-- **Concurrency is coarse (Stage 12).** The worker pool, group commit, and waits-for-graph deadlock detector are in, but all storage access still funnels through a single `Mutex<StorageFile>` — none of the planned sharded buffer-pool latches / partitioned lock manager / sharded txn table. Locking is table-granular: **no row locks, intent-lock escalation, or key-range locks**, so concurrent writers to the same table serialize even on different rows and SERIALIZABLE leans on table locks. Group commit's win ("commits/fsync ≫ 1") shows only on slow disks — ~1 on fast/tmpfs storage. The deadlock detector runs the graph synchronously when a batch parks (plus a 5 s timeout backstop), not the planned 200 ms poll.
+- **Query engine hashes in memory but does not spill (Stage 8).** *(Updated by PR #71.)* Hash join (equijoins), hash aggregate, and hash DISTINCT now replace the old naive nested-loop/O(n²) operators; the nested loop remains a fallback for non-equi/CROSS/mixed-type joins. Still **no** external merge sort, grace-hash partitioning, or per-query memory budget — `ORDER BY` is in-memory `sort` and the hash tables are in-memory — so the plan's "spill-capable from the start" goal is still unmet.
+- **Concurrency: row locks for point ops, still coarse elsewhere (Stage 12).** *(Updated by PR #72.)* Point INSERT/UPDATE/DELETE now take Table IX + a `Row X`, so writers to different rows of one table run concurrently (with intent escalation and FK-parent / unique-index / character-key / float-key guards). Storage access still funnels through a single `Mutex<StorageFile>` (no sharded buffer-pool latches / partitioned lock manager / sharded txn table), and there are **no key-range locks** — SERIALIZABLE still leans on table locks for phantoms. Group commit's win shows only on slow disks. The deadlock detector runs synchronously when a batch parks (plus a 5 s timeout), not the planned 200 ms poll.
 - **Collation is basic (Stage 5).** `COLLATE` and per-column collation are plumbed, but comparison is **not** icu4x-sort-key based — no Swedish/Finnish ordering, no collation precedence rules, default collation hardcoded. Index keys are binary, not collation sort keys (Stage 7).
 - **Checkpoints are quiescent, not fuzzy (Stage 2).** ARIES analysis/redo/undo + CLRs are correct, but a checkpoint is skipped while any transaction is active rather than the planned fuzzy checkpoint (begin/end + DPT/ATT snapshots). Correct, but the WAL can grow under a long-running transaction.
 - **Prepared statements are minimal (Stage 9).** `sp_executesql` (parameterized queries) works; the `sp_prepare`/`sp_execute`/`sp_prepexec`/`sp_unprepare` handle family, per-session `PreparedStatement` caching + rebind-after-DDL, and RETURNVALUE/DONEPROC/DONEINPROC tokens are not built.
 
 ### Smaller deferred items (self-contained follow-ups)
 
-- Correlated subqueries (Stage 11) — uncorrelated forms work; a correlated one errors 207.
-- `ALTER TABLE ADD <column>` (Stage 10).
-- `SCOPE_IDENTITY()` (Stage 5).
-- `SET XACT_ABORT` is parsed but not honored; a statement error always dooms the transaction, no severity≥17 distinction (Stage 6).
-- Views are stored in `TableDef.view_query`, not `sys.sql_modules`; view-over-view is rejected rather than expanded; no `EXEC sp_executesql` text path (Stage 11).
-- Planner: no projection pruning, no row-count tie-breaks, `KeyLookup` folded into `IndexSeek`; UNIQUE only via `CREATE UNIQUE INDEX`, not an inline constraint (Stage 7).
+- ~~Correlated subqueries (Stage 11)~~ — **done (#73)** for scalar/EXISTS/IN in WHERE over base-table/join subqueries; a correlated ref inside a derived-table/view subquery, or in the SELECT list / HAVING / an UPDATE-DELETE WHERE, still errors 207.
+- `ALTER TABLE ADD <column>` (Stage 10) — **not a quick item**: `decode_row` is strict, so it needs a self-describing row format (column count) or a full-table rewrite.
+- ~~`SCOPE_IDENTITY()` (Stage 5)~~ — **done (#74)**; returns NUMERIC(38,0), session-scoped.
+- `SET XACT_ABORT` is parsed but not honored; a statement error always dooms the transaction, no severity≥17 distinction (Stage 6). *(Honouring it safely needs statement-level rollback / `SAVE TRAN` so a surviving txn stays consistent.)*
+- Views: ~~stored in `TableDef.view_query`, not `sys.sql_modules`~~ **`sys.sql_modules` added (#75)** (view text still also lives in `TableDef.view_query`); ~~view-over-view rejected~~ **now expanded recursively (#75)** with a 32-deep cycle cap; no `EXEC sp_executesql` text path (Stage 11).
+- Planner: no projection pruning, no row-count tie-breaks, `KeyLookup` folded into `IndexSeek`; ~~UNIQUE only via `CREATE UNIQUE INDEX`~~ **inline `UNIQUE` constraint added (#77)** (Stage 7).
 - TDS Attention (cancel) is acknowledged but does not abort a running statement; `ALL_HEADERS` is skipped, not validated (Stages 4, 6). No `sp_describe_first_result_set` (Stage 9). No idle/txn reaper; result rows are materialized in `BatchOutcome`, not streamed via bounded sinks (Stage 6). No DDL version counter (Stage 3).
 
 ### Testing substitutions
