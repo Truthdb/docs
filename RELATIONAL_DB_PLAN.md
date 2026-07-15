@@ -114,6 +114,14 @@ when actually blocked or asked.
   the workspace root, which is not a git repo (only the subdirectories are).
   Create worktrees yourself from *inside* `truthdb/` (`git worktree add -q
   --detach <path> <sha>`) and pass each agent its own path.
+- **Never give a review agent the working tree you are editing.** A review agent
+  told it may experiment will edit files, and it teeth-checks by *mutating the
+  fix and running the tests* — so it leaves the repo mutated while it thinks. In
+  this session one such agent silently reverted the reaper fix (leaving
+  `// MUTANT: no grantability skip` in the tree) and wrote its own competing
+  version of a test into the same file mid-edit. Give reviewers a read-only
+  brief, or their own worktree; and `git status` before trusting a test run that
+  an agent was alive for.
 - **Workflow `args` does not reliably carry arrays** — put lists in the script
   body. `require` is not defined in workflow scripts.
 - `git add -A` inside `truthdb/` sweeps `.claude/worktrees/*` into the commit;
@@ -124,9 +132,13 @@ when actually blocked or asked.
 ### Where the work is right now (2026-07-15)
 
 Yellow bullets: 23 → 16 this session. Merged: truthdb #87–#96, docs #41–#51.
+**Open PRs awaiting a human merge: truthdb #97 (TDS writer, all four CI checks
+green) and #98 (reaper fix, independent of #97).** The harness refuses to merge
+a PR into a public repo without human review, whatever this file says about
+self-merging being authorised — expect to hand PRs over rather than merge them.
 
-The front of the queue is Stage 6's **Engine actor** bullet — bounded result
-streaming. Two legs are merged:
+The front of the queue is still Stage 6's **Engine actor** bullet — bounded
+result streaming. Three legs are merged (or in #97):
 
 - #92 — a resumable scan cursor for the B+ tree and heap (`scan` is reimplemented
   on it, so every existing caller exercises it).
@@ -135,17 +147,45 @@ streaming. Two legs are merged:
   the integrity checks (FK probes, `ALTER TABLE` WITH CHECK) need its atomic
   single hold, since a validation that missed a row to a mid-walk page split
   would admit a violating row.
+- #97 — the TDS writer (`MessageWriter`, one packet's buffer, emitted as it
+  fills). Rendering is constant-memory; the reply is not.
 
-Three legs remain: the actor still replies with one `oneshot<BatchReply>`
-carrying every statement's rows; the TDS writer still renders a finished
-`BatchOutcome` into one buffer; the executor still collects.
+**Two legs remain, and they must land together, in this order.**
 
-**The constraint that shapes the rest:** a computed column's type comes from
-`infer_type` over *every* value in the column, but TDS must send COLMETADATA
-*before* the first row. So `SELECT v*2 FROM t` cannot stream without static type
-derivation from the expression tree — its own piece of work, since it would
-change result types repo-wide. `SELECT v FROM t` takes its type from the schema
-and can stream today.
+**(a) Get the engine's housekeeping off the request workers.** `worker_loop`
+runs `reap_expired`, `reap_idle_txns` and `drain_ready` inline, and
+`EngineCall`s (including `CloseSession` and the shutdown pill) are dequeued by
+the same threads. That is fine only while a worker always returns promptly.
+**Do not skip this to get to (b) faster** — a first draft of #97 did exactly
+that and had to be cut. It gave the worker a bounded sink and a `blocking_send`,
+and two independent reviews (correctly) killed it: at `workers = cores-2` — two
+on a 4-core box — two clients that simply stop reading their socket wedge the
+*entire engine*, and the idle-transaction reaper, whose whole purpose is
+surviving a client that goes silent, is disabled by precisely that scenario.
+The Attention escape hatch cannot fire either, because a worker blocked writing
+never polls the read. Only after housekeeping has its own thread is blocking a
+worker on a client merely slow instead of fatal.
+
+**(b) Then the bounded sink + the executor streaming into it**, which is one
+piece of work, not two: a bounded channel whose producer still materializes the
+whole result (as today) costs backpressure and buys nothing. `exec_select` in
+`rel/mod.rs` is the target — note `build_source` materializes every source row
+before WHERE even runs, so scan→filter→project is what becomes incremental, on
+top of #92's cursor.
+
+**The constraint that shapes (b):** a computed column's type comes from
+`infer_type` over *every* value in the column (`project`'s `Proj::Expr` arm),
+but TDS must send COLMETADATA *before* the first row. So `SELECT v*2 FROM t`
+cannot stream without static type derivation from the expression tree — its own
+piece of work, since it would change result types repo-wide. `SELECT v FROM t`
+takes its type from the schema and can stream today, which is the slice to take
+first.
+
+**The generalisable lesson from the cut draft:** the scheduler's liveness
+quietly assumes a worker returns promptly, and *anything* that lets a client
+delay a worker breaks assumptions written years apart. #98 fixes one that was
+already latent (`reap_expired` killed a waiter that was grantable-but-unrun past
+its deadline, reporting 1205 with no conflict). Re-audit the rest before (b).
 
 ## Stages
 
@@ -193,7 +233,7 @@ Real tools become the daily harness from here.
 
 ### Stage 6 — Sessions, transactions, locking; driver transactions over TDS
 The big architectural stage — do it before more SQL piles onto the global mutex.
-- 🟡 **Engine actor**: replace `Arc<Mutex<Engine>>` with `EngineHandle` (mpsc of `EngineCall`) served by an engine-owned thread(+later pool); bounded sinks stream result rows; sessions live engine-side in a `SessionManager` (txn state, SET options; prepared statements later). Connection drop → rollback + lock release; idle/txn reaper. *(done #89: **idle/txn reaper**. Connection drop already rolled back and released locks, but only covers a connection that actually closed — a client that opens a transaction then goes silent (crashed process, severed network) held its locks until the OS noticed the dead socket, which can take hours. Sessions stamp `last_activity`; the worker loop sweeps those idle past `idle_txn_timeout` with a transaction open, rolling back and releasing locks. A running batch is unreapable by construction (`take_ctx` moved its context out, so the session reports no open transaction); a parked batch's session is skipped. Default 10 min — a deliberate divergence from SQL Server, which never reaps — and disableable. Adversarial review caught a **critical** bug the reaper made reachable: `TxnContext::abort` never cleared `savepoints`, harmless while every caller discarded the context but not once a session survives its own abort — a stale savepoint then either silently discarded committed rows or panicked a worker permanently; it also caught a reaped session silently autocommitting the client's later work (now reported as 1205). **Gap remaining: results are still fully materialized in `BatchOutcome`, not streamed via bounded sinks.** Two legs of that are done. #92 gave the B+ tree and heap a **resumable scan cursor** (`scan_from(ctx, cursor, budget, out)`; `scan` is reimplemented on it, so every existing caller exercises it; a resumed page is checked against its object, since nothing pins it between slices and a recycled page would otherwise be read as ours). #96 put the **read path on sliced scans** — `rel_scan_sliced` takes the storage lock once per 1024-row slice, so one large SELECT no longer blocks every other session for its whole walk (pinned by a test that another thread *does* get the lock mid-scan, and fails under a single hold). Deliberately not applied to `rel_scan` itself: the integrity checks (FK parent-side probe, FK self-reference in UPDATE, ALTER TABLE WITH CHECK) need its atomic single hold, since a validation that missed a row to a mid-walk page split would admit a violating row. Left: the actor still replies with one `oneshot<BatchReply>` carrying every statement's rows, the TDS writer still renders a finished `BatchOutcome` into one `Vec<u8>`, and the executor still collects. **A constraint found while building it:** a computed column's type comes from `infer_type` over *every* value in the column, but TDS must send COLMETADATA before the first row — so `SELECT v*2 FROM t` cannot stream without static type derivation from the expression tree (which would change result types repo-wide, so it is its own work); `SELECT v FROM t` takes its type from the schema and can. Still coupled to the Stage 8 streaming-scan item.)*
+- 🟡 **Engine actor**: replace `Arc<Mutex<Engine>>` with `EngineHandle` (mpsc of `EngineCall`) served by an engine-owned thread(+later pool); bounded sinks stream result rows; sessions live engine-side in a `SessionManager` (txn state, SET options; prepared statements later). Connection drop → rollback + lock release; idle/txn reaper. *(done #89: **idle/txn reaper**. Connection drop already rolled back and released locks, but only covers a connection that actually closed — a client that opens a transaction then goes silent (crashed process, severed network) held its locks until the OS noticed the dead socket, which can take hours. Sessions stamp `last_activity`; the worker loop sweeps those idle past `idle_txn_timeout` with a transaction open, rolling back and releasing locks. A running batch is unreapable by construction (`take_ctx` moved its context out, so the session reports no open transaction); a parked batch's session is skipped. Default 10 min — a deliberate divergence from SQL Server, which never reaps — and disableable. Adversarial review caught a **critical** bug the reaper made reachable: `TxnContext::abort` never cleared `savepoints`, harmless while every caller discarded the context but not once a session survives its own abort — a stale savepoint then either silently discarded committed rows or panicked a worker permanently; it also caught a reaped session silently autocommitting the client's later work (now reported as 1205). **Gap remaining: results are still fully materialized in `BatchOutcome`, not streamed via bounded sinks.** Two legs of that are done. #92 gave the B+ tree and heap a **resumable scan cursor** (`scan_from(ctx, cursor, budget, out)`; `scan` is reimplemented on it, so every existing caller exercises it; a resumed page is checked against its object, since nothing pins it between slices and a recycled page would otherwise be read as ours). #96 put the **read path on sliced scans** — `rel_scan_sliced` takes the storage lock once per 1024-row slice, so one large SELECT no longer blocks every other session for its whole walk (pinned by a test that another thread *does* get the lock mid-scan, and fails under a single hold). Deliberately not applied to `rel_scan` itself: the integrity checks (FK parent-side probe, FK self-reference in UPDATE, ALTER TABLE WITH CHECK) need its atomic single hold, since a validation that missed a row to a mid-walk page split would admit a violating row. #97 did **the TDS writer leg**. A `MessageWriter` owns one packet's worth of buffer and emits each packet as it fills; tokens render through it, handing the scratch over every `ROW_FLUSH_BYTES` inside a result set, so **rendering is constant-memory** instead of encoding the whole token stream into one `Vec<u8>` and chunking it afterwards. `write_message` is reimplemented on the same writer, so packet framing has one implementation. The bytes are identical — pinned by an oracle test that keeps the old `build_batch_tokens` **verbatim** and asserts every batch shape reaches the wire byte-for-byte the same through both (empty, zero-row/small/5000-row rowsets, row counts, DDL, three statements, results-then-error, error alone; with and without an open transaction; at two packet sizes). Two framing details it cost a bug each to learn: a payload that *exactly* fills a packet must end as that packet with EOM, not a full packet plus an empty one (hence the strictly-greater test in `MessageWriter::write`), and tokens may straddle packet boundaries, so nothing is padded to keep one whole. **Gap remaining: the reply is still a whole `BatchOutcome` over a `oneshot`, and the executor still collects** — #97 bought the rendering copy and time-to-first-byte, not the result's own memory. **A rejected design, recorded so it is not rebuilt:** the first draft of #97 also did the reply-channel leg — a *bounded* (depth 4) channel of row events, the plan's "bounded sinks", with the worker `blocking_send`ing. Two independent adversarial reviews rejected it for the same reason, and were right. **The engine's reapers, the parked-batch drain, and shutdown all run on the request workers**, so a worker blocking on a slow client's socket does not degrade that client — it wedges the engine: at `workers = cores-2` (2 on a 4-core box) two clients that stop reading are the whole pool, the idle-txn reaper is disabled by exactly the scenario it exists for, `CloseSession` never releases its locks, and the shutdown pill is never dequeued. The Attention escape hatch cannot fire either, since a worker blocked writing never polls the read. **Backpressure onto worker threads needs those duties moved off them first** — and it buys nothing until the executor streams, so the order is: liveness prerequisites → bounded sink + executor streaming, together. **The constraint that shapes that last leg:** a computed column's type comes from `infer_type` over *every* value in the column, but TDS must send COLMETADATA before the first row — so `SELECT v*2 FROM t` cannot stream without static type derivation from the expression tree (which would change result types repo-wide, so it is its own work); `SELECT v FROM t` takes its type from the schema and can. Still coupled to the Stage 8 streaming-scan item.)*
 - ✅ SQL: `BEGIN TRAN`/`COMMIT`/`ROLLBACK`, `@@TRANCOUNT`, `SET XACT_ABORT`, T-SQL nesting semantics, statement-level atomicity (statement failure keeps the txn unless XACT_ABORT/severity≥17), DDL in explicit txns disallowed for now (3902/3903 errors). *(done #83: **statement-level atomicity + `SET XACT_ABORT`**. A new ARIES `rollback_to(savepoint)` (undo-log suffix undone via the existing `undo_one`/CLR discipline, crash-safe) wraps every explicit-txn statement, so a failed statement undoes only its own writes. `SET XACT_ABORT OFF` (default) then rolls back just the statement and the batch continues; `ON`, or error severity ≥ 17, dooms the whole txn (3930). Constraint errors (2627/2601/515/547, sev 14–16) are non-dooming. Verified by a crash-mid-txn recovery test that a post-savepoint crash undoes cleanly without double-undo. Also done #84: **`SAVE TRANSACTION` / `ROLLBACK TRANSACTION <name>`** (named savepoints reusing `rollback_to`). Also done #87: **TRY/CATCH + `XACT_STATE()` + `ERROR_*()`**. The batch loop became a recursive `run_block(.., in_try)`: inside a `TRY` *any* statement error transfers to the matching `CATCH` (the failed statement's writes are already undone to its per-statement savepoint, so the `CATCH` sees a consistent txn); `XACT_ABORT ON`/severity≥17 still dooms the txn but control still reaches the `CATCH`, where `XACT_STATE()` reports -1. Caught errors stack, so nested TRY/CATCH restore the outer error. The doomed gate was corrected to SQL Server semantics — an uncommittable txn rejects *log writes* (3930) but allows reads/`SET`/`DECLARE`, without which `SELECT XACT_STATE()` in a doomed `CATCH` was impossible. Adversarial review caught a real parser bug: with no reserved-word set the alias parsers read a bare `END` as an implicit alias, so the canonical semicolon-less `SELECT 1 END TRY` failed 102. Remaining (simplification, matching this bullet's own spec): per-error batch-vs-statement fidelity is the severity≥17 cut, not SQL Server's per-error table; `ERROR_LINE()`=0 and `ERROR_PROCEDURE()`=NULL (no statement-line map / stored procs yet).)*
 - ✅ Txn manager on ARIES (commit = flush-to-LSN; rollback = walk undo chain emitting CLRs); lock manager (IS/IX/S/X; Database/Table keys now, Row keys Stage 12; FIFO queues; 5 s wait timeout → abort youngest). Isolation: READ UNCOMMITTED/READ COMMITTED/REPEATABLE READ/SERIALIZABLE, lock-based (SERIALIZABLE correct via table locks until key-range locks).
 - ✅ **TDS Transaction Manager requests** (TM_BEGIN/COMMIT/ROLLBACK_XACT + ENVCHANGE 8/9/10 descriptors, validated in ALL_HEADERS) — `db.BeginTx()` / `setAutoCommit(false)` work as soon as transactions exist. *(done #88: `parse_all_headers` validates the block per MS-TDS 2.2.5.2 — TotalLength covers itself and fits the payload, each entry's HeaderLength covers its own length+type and stays inside the block (so the walk always advances and cannot overrun), a type-2 Transaction Descriptor header carries its full u64+u32; unknown types are skipped. A malformed block is now a protocol error instead of being silently reinterpreted as request data, which is what the old `skip_all_headers` did — an out-of-range TotalLength meant "no headers", handing header bytes to the SQL/RPC decoder. `check_transaction_descriptor` rejects a COMMIT/ROLLBACK naming a transaction the connection is not in. **A TM begin is deliberately not validated**: its descriptor names no transaction yet and real drivers send a placeholder — go-mssqldb v1.8.0 (the version CI pins) hardcodes 0 on begin while using the live `tranid` elsewhere — so validating it killed correct clients' connections; adversarial review caught this, and the test client now models that asymmetry. Review also found the TM handler announced a **nested** commit as ending the transaction (ENVCHANGE 9 + descriptor cleared) while ignoring `reply.in_transaction`, contradicting its own DONE(INXACT); a terminating ENVCHANGE now fires only when the transaction actually ended.)*
