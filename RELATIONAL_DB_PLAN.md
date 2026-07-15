@@ -40,6 +40,113 @@ TruthDB today implements only the start of Elasticsearch-like functionality (in-
 - **LSN** = unwrapped u64 WAL byte position (current `wal_state.tail` semantics).
 - **Temp space** ("tempdb-lite"): allocator extents flagged temporary, never WAL-logged, freed wholesale on restart — backs spills and the version store.
 
+## Working on this plan (read first, each new session)
+
+Sessions end when the context window fills, so this section carries what the
+next one would otherwise have to rediscover. It is about *how to work here*, not
+what to build — the per-bullet marks below are the work list.
+
+### The marks are the status, and they lie in both directions
+
+The 🟡/✅ marks and their gap notes are the source of truth for what is done.
+They are also wrong often enough that **you must verify a gap note against the
+code before building anything**. Both failure modes have happened:
+
+- **Notes that under-claim.** `SCOPE_IDENTITY()` was marked missing but shipped
+  in #74; inline `UNIQUE` was marked missing but shipped in #77. Both were flipped
+  after checking, not after reading the note.
+- **Notes that over-claim the gap.** Several described built, tested work as
+  absent — correlated subqueries (WHERE-clause correlation ships in #73),
+  `sys.sql_modules` and view-over-view expansion, the NULL-heavy join matrices,
+  row locks ("still table-granular" — they ship in #72). Corrected in docs#48.
+- **A blocker that was never real.** This plan asserted for months that collation
+  sort keys were "blocked by `icu_collator` 1.5 exposing no public sort-key API".
+  That was only ever checked against the pinned version. icu 2.2 has
+  `write_sort_key_to`. The bullet was closed in #93/#94/#95.
+  **A dependency blocker is a claim about a version, and it expires.**
+
+A full audit (2026-07-15) checked every remaining 🟡 against the code, with each
+"this is already done" claim adversarially refuted before being believed. Result:
+**no remaining yellow is stale** — they are all real work. Do not go looking for
+freebies; there are none left.
+
+### Two practices that repeatedly caught real bugs
+
+**Adversarially review every correctness-critical change before merging.** It
+found a critical bug in *both* correctness PRs of the 2026-07-15 session, neither
+findable by the author's own tests:
+
+- #88 — validating the TDS transaction descriptor on every request would have
+  killed go-mssqldb connections: v1.8.0 (the version CI pins) hardcodes a literal
+  `0` on BEGIN while using the live `tranid` everywhere else.
+- #89 — `TxnContext::abort` never cleared `savepoints`. Harmless for as long as
+  every caller discarded the context, but the idle reaper was the first whose
+  session *survives* its own abort, so a stale savepoint could silently discard
+  committed rows or permanently panic a worker (there is no `catch_unwind`
+  anywhere in the crate).
+
+**Prove every new test fails with its fix removed** (back up the file, weaken the
+implementation, run, restore). This is not ceremony — it caught vacuous tests
+three times: the ALL_HEADERS tests (the in-repo client echoed descriptors, which
+real drivers do not), an `encryption = off` test (no certificate in the test
+config, so the old code answered the same), and a timing test that only passed
+by luck of core count (a sibling worker's stale deadline snapshot masked it — pin
+such things with a single-worker pool).
+
+Corollary: **model real drivers in test clients, not idealised ones.**
+
+### The loop
+
+Branch → implement → adversarial review → teeth-check each test → `cargo fmt` +
+clippy → PR → CI → `gh pr merge --squash --delete-branch`, plus a parallel docs
+PR updating this file's bullet. Merging your own PRs without review is
+authorised.
+
+Do not stop after a merge to report. Merge, branch, keep going. Surface only
+when actually blocked or asked.
+
+### Environment and tooling gotchas
+
+- **WSL2**: `cd truthdb && cargo test --workspace` runs natively. CI uses Rust
+  1.92; the local clippy (1.94) flags test-only `let mut` / unused `path`
+  warnings that CI does not — a known non-issue, not something to fix.
+- **The Workflow tool's `isolation: 'worktree'` fails here.** The agent's cwd is
+  the workspace root, which is not a git repo (only the subdirectories are).
+  Create worktrees yourself from *inside* `truthdb/` (`git worktree add -q
+  --detach <path> <sha>`) and pass each agent its own path.
+- **Workflow `args` does not reliably carry arrays** — put lists in the script
+  body. `require` is not defined in workflow scripts.
+- `git add -A` inside `truthdb/` sweeps `.claude/worktrees/*` into the commit;
+  add only `crates/` and `git worktree prune` afterwards.
+- `git commit --amend` after a push is blocked by the sandbox. Use a follow-up
+  commit.
+
+### Where the work is right now (2026-07-15)
+
+Yellow bullets: 23 → 16 this session. Merged: truthdb #87–#96, docs #41–#51.
+
+The front of the queue is Stage 6's **Engine actor** bullet — bounded result
+streaming. Two legs are merged:
+
+- #92 — a resumable scan cursor for the B+ tree and heap (`scan` is reimplemented
+  on it, so every existing caller exercises it).
+- #96 — the read path scans in slices, taking the storage lock once per 1024 rows
+  rather than once per table. Deliberately *not* applied to `rel_scan` itself:
+  the integrity checks (FK probes, `ALTER TABLE` WITH CHECK) need its atomic
+  single hold, since a validation that missed a row to a mid-walk page split
+  would admit a violating row.
+
+Three legs remain: the actor still replies with one `oneshot<BatchReply>`
+carrying every statement's rows; the TDS writer still renders a finished
+`BatchOutcome` into one buffer; the executor still collects.
+
+**The constraint that shapes the rest:** a computed column's type comes from
+`infer_type` over *every* value in the column, but TDS must send COLMETADATA
+*before* the first row. So `SELECT v*2 FROM t` cannot stream without static type
+derivation from the expression tree — its own piece of work, since it would
+change result types repo-wide. `SELECT v FROM t` takes its type from the schema
+and can stream today.
+
 ## Stages
 
 > **Status legend:** ✅ done · 🟡 partial (some sub-items unbuilt — see the `*(gap: …)*` note) · ❌ not started. Marks verified bullet-by-bullet against the code on 2026-07-14; see **[Implementation notes](#implementation-notes)** at the bottom. Shipped through Stage 12 (PRs #43–#70).
