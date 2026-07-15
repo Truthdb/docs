@@ -131,11 +131,13 @@ when actually blocked or asked.
 
 ### Where the work is right now (2026-07-15)
 
-Yellow bullets: 23 → 16 this session. Merged: truthdb #87–#96, docs #41–#51.
-**Open PRs awaiting a human merge: truthdb #97 (TDS writer, all four CI checks
-green) and #98 (reaper fix, independent of #97).** The harness refuses to merge
-a PR into a public repo without human review, whatever this file says about
-self-merging being authorised — expect to hand PRs over rather than merge them.
+Yellow bullets: 23 → 16 this session. Merged: truthdb #87–#99, docs #41–#54.
+
+**On merging:** `gh pr merge` is refused by the harness's auto-mode classifier
+("agent authored + self-reviewed, no human approval, public repo") — this file
+saying self-merge is authorised does **not** satisfy it; a message in the live
+conversation does. So do not report it as terminal and hand the PRs back: say
+what the blocker is in one line and ask. It has annoyed the user three times.
 
 The front of the queue is still Stage 6's **Engine actor** bullet — bounded
 result streaming. Three legs are merged (or in #97):
@@ -152,19 +154,42 @@ result streaming. Three legs are merged (or in #97):
 
 **Two legs remain, and they must land together, in this order.**
 
-**(a) Get the engine's housekeeping off the request workers.** `worker_loop`
-runs `reap_expired`, `reap_idle_txns` and `drain_ready` inline, and
+**(a) Get the engine's housekeeping off the request workers. PART DONE (#99).**
+`worker_loop` ran `reap_expired`, `reap_idle_txns` and `drain_ready` inline, and
 `EngineCall`s (including `CloseSession` and the shutdown pill) are dequeued by
 the same threads. That is fine only while a worker always returns promptly.
-**Do not skip this to get to (b) faster** — a first draft of #97 did exactly
-that and had to be cut. It gave the worker a bounded sink and a `blocking_send`,
-and two independent reviews (correctly) killed it: at `workers = cores-2` — two
-on a 4-core box — two clients that simply stop reading their socket wedge the
-*entire engine*, and the idle-transaction reaper, whose whole purpose is
-surviving a client that goes silent, is disabled by precisely that scenario.
-The Attention escape hatch cannot fire either, because a worker blocked writing
-never polls the read. Only after housekeeping has its own thread is blocking a
-worker on a client merely slow instead of fatal.
+**Do not skip the rest of this to get to (b) faster** — a first draft of #97 did
+exactly that and had to be cut. It gave the worker a bounded sink and a
+`blocking_send`, and two independent reviews (correctly) killed it: at
+`workers = cores-2` — two on a 4-core box — two clients that simply stop reading
+their socket wedge the *entire engine*, and the idle-transaction reaper, whose
+whole purpose is surviving a client that goes silent, is disabled by precisely
+that scenario. The Attention escape hatch cannot fire either, because a worker
+blocked writing never polls the read.
+
+#99 moved **the idle reaper** to a thread of its own, and, more usefully,
+established *why the rest cannot follow it there*. **`reap_expired` is coupled to
+draining**: reaping a victim releases the locks that rescue the waiters behind
+it, and its contract is that the same pass then runs them — every other releaser
+in `session.rs` drains. A sweeper that reaps without draining re-reaps waiters a
+drain would have rescued (for a chain of three, a second victim where one would
+do), and it *spins*: since #98 refuses to reap a waiter whose locks are free,
+that waiter keeps a deadline in the past, so a sleep derived from the earliest
+parked deadline computes zero. The review measured **3109 sweeps in 200ms**,
+hammering the scheduler mutex — and only while every worker was busy, since a
+free worker drains the waiter away in microseconds. The first cut of #99 shipped
+exactly that bug and the review caught it. The idle reaper moved cleanly only
+because it has no such coupling: purely a function of `last_activity`.
+
+**So the remaining piece of (a) is: give the pool a way to hand a drain to a
+worker.** Today a worker blocks in `rx.recv_timeout`, so nothing else can wake
+it, and `Shared` deliberately holds **no `Sender`** (shutdown is drop-based —
+`EngineHandle::shutdown()` is never called; dropping the last handle disconnects
+the channel). The shape that fits: replace `Mutex<mpsc::Receiver>` with a
+condvar queue a worker waits on for *either* a call or a drain nudge, with an
+`Arc` token whose `Drop` closes it so drop-based shutdown still works. Then
+`reap_expired` can move too, `CloseSession` cannot be stranded behind a blocked
+worker, and (b) is survivable.
 
 **(b) Then the bounded sink + the executor streaming into it**, which is one
 piece of work, not two: a bounded channel whose producer still materializes the
