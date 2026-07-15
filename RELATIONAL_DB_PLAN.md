@@ -203,10 +203,48 @@ reader as a disconnect, before assuming otherwise.
 
 **(b) Then the bounded sink + the executor streaming into it**, which is one
 piece of work, not two: a bounded channel whose producer still materializes the
-whole result (as today) costs backpressure and buys nothing. `exec_select` in
-`rel/mod.rs` is the target — note `build_source` materializes every source row
-before WHERE even runs, so scan→filter→project is what becomes incremental, on
-top of #92's cursor.
+whole result (as today) costs backpressure and buys nothing.
+
+**Half of it is already written and pushed**, at branch `archive/bounded-sink-draft`
+(truthdb). That is the cut first draft of #97 — rejected then only because
+housekeeping was still on the workers, which (a) has since fixed. It has, and
+they are worth taking rather than rebuilding:
+
+- `BatchEvent` (`Columns` / `Rows` chunks / `StatementDone{count,in_transaction}`
+  / `Error` / terminal `Complete`|`Failed`) and `BatchSink` over a bounded
+  `tokio::mpsc`, with `blocking_send` on the worker.
+- `collect_reply`, which drains events back into a whole `BatchReply` — so
+  `run_batch` and every existing caller keep working unchanged.
+- `send_rowset`'s chunking (verified for 0/1/255/256/257/512/1000 rows).
+- `BatchRender` + `stream_reply`: the renderer with the **deferred DONE**
+  (streaming cannot know the last statement by index, so each DONE waits for the
+  next event to settle `DONE_MORE`), and the `select!` over `events.recv()` and
+  the Attention read, using `tokio::io::split`.
+
+**Two bugs in that draft, found by review — fix them, do not re-ship them:**
+
+1. **`None => break` renders a message with no DONE at all.** If the channel
+   closes without a terminal event (an executor panic; the pool dropping a call
+   at shutdown), `stream_reply` falls through to `finish()` and emits an empty
+   EOM packet. The old path turned a dropped `oneshot` into a clean 50000 error.
+   Render `Failed(Unavailable)` on that arm. Same for a channel that closes after
+   `StatementDone` but before `Complete` — the pending DONE is dropped, leaving a
+   result set unterminated.
+2. **A late Attention appends a second DONE after the final one** (`got > 0`
+   partial-header path). Rare; decide it deliberately.
+
+Also note the draft's `stream_reply` **cannot see an Attention while blocked
+writing** to a client that is not reading — the arm body awaits outside the
+`select!`. That is acceptable now (a stalled client costs its own worker, not
+the engine) but it means Attention is not an escape hatch from that state.
+
+**What is NOT in the draft — the actual remaining work:** the executor still
+collects. `exec_select` in `rel/mod.rs` is the target, and note `build_source`
+materializes *every* source row before WHERE even runs, so scan→filter→project
+is what has to become incremental, on top of #92's cursor. Take the schema-typed
+shape first (single base table, no ORDER BY/DISTINCT/aggregate/join/derived/CTE,
+every projected item a bare source column) and leave everything else on the
+collecting path.
 
 **The constraint that shapes (b):** a computed column's type comes from
 `infer_type` over *every* value in the column (`project`'s `Proj::Expr` arm),
