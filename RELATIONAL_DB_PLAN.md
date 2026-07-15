@@ -85,6 +85,15 @@ findable by the author's own tests:
   committed rows or permanently panic a worker (there is no `catch_unwind`
   anywhere in the crate).
 
+**Run a concurrency test's whole module 25+ times before believing it.** A
+20%-flake survived *three consecutive clean full-suite runs* in #100 and was
+only found by looping the module. The cause is worth knowing because it will
+recur: the tests run **in parallel in one binary**, so a `static` counter used
+to observe a pool measures *every other test's pool too*. Put such counters on
+`Shared`, not in a static. (The one exception is a counter asserting only that
+*some* pool did a thing — e.g. spawned its maintenance thread — where a sibling
+satisfying it exercises the same code.)
+
 **Prove every new test fails with its fix removed** (back up the file, weaken the
 implementation, run, restore). This is not ceremony — it caught vacuous tests
 three times: the ALL_HEADERS tests (the in-repo client echoed descriptors, which
@@ -131,7 +140,7 @@ when actually blocked or asked.
 
 ### Where the work is right now (2026-07-15)
 
-Yellow bullets: 23 → 16 this session. Merged: truthdb #87–#99, docs #41–#54.
+Yellow bullets: 23 → 16 this session. Merged: truthdb #87–#100, docs #41–#55.
 
 **On merging:** `gh pr merge` is refused by the harness's auto-mode classifier
 ("agent authored + self-reviewed, no human approval, public repo") — this file
@@ -152,44 +161,45 @@ result streaming. Three legs are merged (or in #97):
 - #97 — the TDS writer (`MessageWriter`, one packet's buffer, emitted as it
   fills). Rendering is constant-memory; the reply is not.
 
-**Two legs remain, and they must land together, in this order.**
+**(a) Get the engine's housekeeping off the request workers. DONE (#99, #100).**
+`worker_loop` ran `reap_expired`, `reap_idle_txns` and `drain_ready` inline, so
+the engine's safety valves were only as punctual as the pool was free — and the
+pool is `cores-2` threads, two on a 4-core box. Both reapers now run on a
+maintenance thread that never executes a batch. The piece that made it possible
+was **the inbox** (#100): the pool's `Mutex<mpsc::Receiver>` became a condvar
+queue a worker waits on for *either* a call or a **drain nudge**, so a releaser
+on one thread can hand parked work to a worker on another. Shutdown still works
+both ways — the server calls `EngineHandle::shutdown` (`src/main.rs`), tests
+just drop the handle — via a token held only by handles, since the `Arc<Inbox>`
+the workers also hold can never reach zero.
 
-**(a) Get the engine's housekeeping off the request workers. PART DONE (#99).**
-`worker_loop` ran `reap_expired`, `reap_idle_txns` and `drain_ready` inline, and
-`EngineCall`s (including `CloseSession` and the shutdown pill) are dequeued by
-the same threads. That is fine only while a worker always returns promptly.
-**Do not skip the rest of this to get to (b) faster** — a first draft of #97 did
-exactly that and had to be cut. It gave the worker a bounded sink and a
-`blocking_send`, and two independent reviews (correctly) killed it: at
-`workers = cores-2` — two on a 4-core box — two clients that simply stop reading
-their socket wedge the *entire engine*, and the idle-transaction reaper, whose
-whole purpose is surviving a client that goes silent, is disabled by precisely
-that scenario. The Attention escape hatch cannot fire either, because a worker
-blocked writing never polls the read.
+Three things #98–#100 learned the hard way, all still load-bearing:
 
-#99 moved **the idle reaper** to a thread of its own, and, more usefully,
-established *why the rest cannot follow it there*. **`reap_expired` is coupled to
-draining**: reaping a victim releases the locks that rescue the waiters behind
-it, and its contract is that the same pass then runs them — every other releaser
-in `session.rs` drains. A sweeper that reaps without draining re-reaps waiters a
-drain would have rescued (for a chain of three, a second victim where one would
-do), and it *spins*: since #98 refuses to reap a waiter whose locks are free,
-that waiter keeps a deadline in the past, so a sleep derived from the earliest
-parked deadline computes zero. The review measured **3109 sweeps in 200ms**,
-hammering the scheduler mutex — and only while every worker was busy, since a
-free worker drains the waiter away in microseconds. The first cut of #99 shipped
-exactly that bug and the review caught it. The idle reaper moved cleanly only
-because it has no such coupling: purely a function of `last_activity`.
+- **`reap_expired` is coupled to draining.** Reaping a victim releases the locks
+  that rescue the waiters behind it, and every other releaser in `session.rs`
+  drains in the same pass. A sweeper that reaps without draining re-reaps
+  waiters a drain would have rescued (a chain of three loses a second victim).
+  That is what the nudge exists for.
+- **A grantable waiter must never drive a sleep.** #98 refuses to reap one, so
+  its deadline stays in the past; a wait derived from it computes zero and
+  spins. Measured at **3109 sweeps in 200ms** against the scheduler mutex — and
+  only while every worker was busy, i.e. exactly when it hurts. Hence
+  `earliest_reapable_deadline`, plus a floor on the sleep.
+- **Workers now block indefinitely** — there is no `recv_timeout` to fall back
+  on. A nudge that should have been sent and was not is a batch parked
+  *forever*. Every releaser must drain directly or nudge; the maintenance sweep
+  also nudges unconditionally as the backstop the old timeout used to be.
 
-**So the remaining piece of (a) is: give the pool a way to hand a drain to a
-worker.** Today a worker blocks in `rx.recv_timeout`, so nothing else can wake
-it, and `Shared` deliberately holds **no `Sender`** (shutdown is drop-based —
-`EngineHandle::shutdown()` is never called; dropping the last handle disconnects
-the channel). The shape that fits: replace `Mutex<mpsc::Receiver>` with a
-condvar queue a worker waits on for *either* a call or a drain nudge, with an
-`Arc` token whose `Drop` closes it so drop-based shutdown still works. Then
-`reap_expired` can move too, `CloseSession` cannot be stranded behind a blocked
-worker, and (b) is survivable.
+**Do not undo this to get to (b) faster** — a first draft of #97 skipped it and
+had to be cut. It gave the worker a bounded sink and a `blocking_send`, and two
+independent reviews (correctly) killed it: two clients that simply stop reading
+their socket wedged the *entire engine*, and the idle-transaction reaper, whose
+whole purpose is surviving a client that goes silent, was disabled by precisely
+that scenario. The Attention escape hatch could not fire either, because a
+worker blocked writing never polls the read. **(b) is now survivable**, but note
+the wedge is only *narrowed*: a blocked worker is still a lost worker, and
+`CloseSession` can still sit behind one. Size the pool, or treat a stalled
+reader as a disconnect, before assuming otherwise.
 
 **(b) Then the bounded sink + the executor streaming into it**, which is one
 piece of work, not two: a bounded channel whose producer still materializes the
