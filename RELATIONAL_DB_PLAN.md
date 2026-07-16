@@ -147,7 +147,7 @@ when actually blocked or asked.
 
 ### Where the work is right now (2026-07-16)
 
-Yellow bullets: 23 → 10. Merged: truthdb #87–#114, docs #41–#69.
+Yellow bullets: 23 → 7. Merged: truthdb #87–#115, docs #41–#70.
 
 **Stage 6's Engine actor bullet and Stage 7's planner bullet are both
 CLOSED** (#105 streaming; #106 covering seeks via INCLUDE leaves; #107 row
@@ -168,11 +168,13 @@ prepare and execute is recompile-on-schema-change by construction — the
 bounded-sinks class of finding). **STAGE 9 IS FULLY GREEN (#114: the exit matrix — RPC procedure framing,
 multi-RPC requests, and a seven-leg client harness in CI; mssql-jdbc's
 prepared flow exposed and fixed three real server gaps, each verified
-against the driver's own source).** The remaining yellows are Stage 10
-(ALTER TABLE ADD column — needs a version-tolerant row decode), Stage 11
-(SELECT-list/HAVING/derived-table correlation; EXEC sp_executesql text
-path), and Stage 12 (sharded latches/partitioned lock manager;
-heartbeats-during-scan test).
+against the driver's own source).** **STAGE 10 IS FULLY GREEN too (#115: ALTER TABLE ADD column as a
+transactional row rewrite — the "metadata-only" design was refuted by the
+positional row codec; see the Stage 10 bullet for the design finding —
+plus a stale-yellow audit of the enforcement bullet).** The remaining
+yellows are Stage 11 (SELECT-list/HAVING/derived-table correlation; EXEC
+sp_executesql text path) and Stage 12 (sharded latches/partitioned lock
+manager; heartbeats-during-scan test).
 
 The result-streaming legs, all merged:
 
@@ -512,9 +514,9 @@ The big architectural stage — do it before more SQL piles onto the global mute
 - ✅ Exit: CI matrix — go-mssqldb `encrypt=true trustservercertificate=true` parameterized CRUD; go-sqlcmd scripted `.sql` runs with output diffing; ODBC sqlcmd (mssql-tools18) flavor; rebind-after-DDL test. *(done #114: both named prerequisites (multi-RPC requests, DONEPROC framing) built and adjudicated live; CI now runs SEVEN client legs — pytds ×4 (batch, sp_executesql RPC, sp_prepare family, TLS), go-mssqldb (full suite incl. TLS handshake + mid-stream failures), mssql-jdbc (prepared-statement CRUD: sp_executesql first execution, sp_prepexec/sp_execute after, batched sp_unprepare multi-RPC, DDL between executions, 2627 recovery), ODBC sqlcmd (mssql-tools18, `-N o -I` — the server deliberately rejects `SET QUOTED_IDENTIFIER OFF`, so `-I` is required) and go-sqlcmd v1.8.2, the sqlcmds running a shared scripted `.sql` with byte-exact output diffs. The "rebind test" is #112's DDL-between-prepare-and-execute test — there is no plan to rebind. Known fragility, accepted: mssql-tools18 is apt-unpinned against a byte-exact expected file; a tool-format change breaks that leg visibly, not silently.)*
 
 ### Stage 10 — Constraints & ALTER TABLE
-- 🟡 `FOREIGN KEY ... REFERENCES` (NO ACTION), `CHECK` (passes on TRUE or UNKNOWN), named constraints, `ALTER TABLE ADD/DROP CONSTRAINT`, `ALTER TABLE ADD` column (metadata-only when nullable/defaulted), `INSERT ... SELECT`. *(gap: `ALTER TABLE ADD <column>` not implemented — parser defers it)*
-- 🟡 Enforcement in DML executors: FK child probe via parent PK; parent-side probe via child FK index if present else scan (documented cliff). Error 547 with constraint names. Catalog: `sys.foreign_keys`, `sys.check_constraints`, `sys.default_constraints`. *(done #76: parent-side probe seeks the child FK index when present, else scans)*
-- 🟡 Exit: constraint slt matrix (NULL-FK skip-enforcement trap included); ALTER + old-row reads; metadata durability. *(gap: ADD-column old-row-read uncovered since ADD column is missing)*
+- ✅ `FOREIGN KEY ... REFERENCES` (NO ACTION), `CHECK` (passes on TRUE or UNKNOWN), named constraints, `ALTER TABLE ADD/DROP CONSTRAINT`, `ALTER TABLE ADD` column (metadata-only when nullable/defaulted), `INSERT ... SELECT`. *(done #115: `ALTER TABLE ADD <column>` — but **the "metadata-only" design FAILED the code audit** (bounded-sinks class): the row codec is positional — null bitmap, fixed section and var offsets all schema-derived, no per-row version stamp — so an old row under a widened schema misreads from the bitmap on. The honest implementation REWRITES the table in one transactional statement under the ALTER's X lock: decode under the old schema, append the FROZEN fill (NULL, or the DEFAULT evaluated once at ALTER time — SQL Server freezes it too), re-encode, update the catalog. Keys/index entries untouched (appending shifts no schema index; tree updates in-place by key; heap RIDs stable). Later INSERTs evaluate the live default per row. NOT NULL without DEFAULT on a non-empty table = 4901, gated by a one-row probe under the held lock, NOT the statistics counter (an under-count would admit NULL fills into a NOT NULL column — encode_row does not enforce nullability). Constraint-carrying adds (UNIQUE/IDENTITY/CHECK/REFERENCES/PK) are directed to their own ADD CONSTRAINT statements. The review verified the permanent-corruption risk (ColumnType::name() round-trip through the spec parser) variant-by-variant and structurally (schema()? runs on the exact def before it persists), and probed row growth at both size caps live.)*
+- ✅ Enforcement in DML executors: FK child probe via parent PK; parent-side probe via child FK index if present else scan (documented cliff). Error 547 with constraint names. Catalog: `sys.foreign_keys`, `sys.check_constraints`, `sys.default_constraints`. *(done #76 for enforcement; the #115 audit found the bullet's remaining pieces already present — all three catalog views answer queries, and 547 carries constraint names — the yellow was stale.)*
+- ✅ Exit: constraint slt matrix (NULL-FK skip-enforcement trap included); ALTER + old-row reads; metadata durability. *(done #115: the slt matrix covers old-row reads across nullable/DEFAULT/NOT NULL DEFAULT, frozen-vs-live defaults, index seeks after ADD, heap tables, the 8→9-column null-bitmap-growth boundary with NULLs on both sides, and UPDATE/DELETE of rewritten rows; a Rust test pins durability across a real WAL-recovery reopen and atomicity under fault injection mid-rewrite. Teeth: a catalog-only ALTER fails the old-row reads with 1701. The constraint matrix (foreign_keys.slt, check_constraints.slt) predates this.)*
 
 ### Stage 11 — Subqueries, views, variables
 - 🟡 Derived tables, scalar subqueries (512 on >1 row), `IN (SELECT)`, `[NOT] EXISTS` (semi/anti hash joins uncorrelated; per-row `SubqueryExec` correlated — correct, slow, honest), non-recursive CTEs. *(done #73: per-row apply for correlated `EXISTS`/`NOT EXISTS`/scalar/`IN` **in the WHERE clause** over base tables and joins — inner-shadows-outer scoping, ambiguous-inner not rebound, NULL correlation; covered by `correlated_subqueries.slt`. Uncorrelated derived/scalar/IN/EXISTS/CTE done. Gap: correlation is wired only into the WHERE loop — a correlated subquery in the **SELECT list** (the most common real-world form) or in **HAVING** still errors 207, as does a correlated reference inside a **derived table/view** (`from_column_names` reads scope from the catalog only, so those are never classified as correlated).)*
@@ -666,7 +668,7 @@ Resolved coupling (was "forward coupling to watch"): making WHERE equality colla
 - ~~`a_sliced_scan_lets_another_thread_take_the_storage_lock_mid_scan` is flaky under CPU starvation~~ — **fixed (#104)**: the test asserted a prober thread *won* the storage lock mid-scan, which is the scheduler's behaviour, not the module's (`std::sync::Mutex` is not fair; ~35% failure under 8-way load). It now asserts the deterministic mechanism — the scan acquires the lock once per slice, which a non-reentrant mutex cannot do without releasing between slices — and fails when the per-slice release is hoisted. 0/25 failures under 8-way load.
 
 - ~~Correlated subqueries (Stage 11)~~ — **done (#73)** for scalar/EXISTS/IN in WHERE over base-table/join subqueries; a correlated ref inside a derived-table/view subquery, or in the SELECT list / HAVING / an UPDATE-DELETE WHERE, still errors 207.
-- `ALTER TABLE ADD <column>` (Stage 10) — **not a quick item**: `decode_row` is strict, so it needs a self-describing row format (column count) or a full-table rewrite.
+- ~~`ALTER TABLE ADD <column>` (Stage 10)~~ — **done (#115)** as the full-table rewrite (the honest option: the positional codec admits no metadata-only path without a per-row version stamp).
 - ~~`SCOPE_IDENTITY()` (Stage 5)~~ — **done (#74)**; returns NUMERIC(38,0), session-scoped.
 - `SET XACT_ABORT` and statement-level atomicity are **done** (#83): a new ARIES `rollback_to(savepoint)` undoes a failed statement's own writes (crash-safe), then `SET XACT_ABORT` (or severity ≥ 17) decides whether the transaction survives or is doomed (Stage 6). `SAVE TRANSACTION` / `ROLLBACK TRANSACTION <name>` also done (#84). TRY/CATCH + `XACT_STATE()` + the `ERROR_*()` intrinsics also done (#87), on the same `rollback_to` primitive.
 - Views: ~~stored in `TableDef.view_query`, not `sys.sql_modules`~~ **`sys.sql_modules` added (#75)** (view text still also lives in `TableDef.view_query`); ~~view-over-view rejected~~ **now expanded recursively (#75)** with a 32-deep cycle cap; no `EXEC sp_executesql` text path (Stage 11).
