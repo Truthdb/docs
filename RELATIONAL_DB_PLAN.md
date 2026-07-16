@@ -147,10 +147,10 @@ when actually blocked or asked.
 
 ### Where the work is right now (2026-07-15)
 
-Yellow bullets: 23 → 16. Merged: truthdb #87–#101, docs #41–#57.
+Yellow bullets: 23 → 16. Merged: truthdb #87–#104, docs #41–#58.
 
-The front of the queue is still Stage 6's **Engine actor** bullet — bounded
-result streaming. Four legs are merged:
+The front of the queue is still Stage 6's **Engine actor** bullet — result
+streaming. Five legs are merged:
 
 - #92 — a resumable scan cursor for the B+ tree and heap (`scan` is reimplemented
   on it, so every existing caller exercises it).
@@ -163,6 +163,11 @@ result streaming. Four legs are merged:
   fills). Rendering is constant-memory; the reply is not.
 - #101 — **the executor leg**: a single-table SELECT of bare columns no longer
   materializes its input (see below).
+- #103 — **the reply channel**: a batch's reply travels as a stream of
+  `BatchEvent`s over an **unbounded** mpsc instead of one `BatchOutcome` over a
+  `oneshot` (see **(c)** for why unbounded is the design, not a compromise).
+  Wire-identical — the #97 oracle now drives the real `stream_reply` through a
+  real channel and still matches byte-for-byte.
 
 **(a) Get the engine's housekeeping off the request workers. DONE (#99, #100).**
 `worker_loop` ran `reap_expired`, `reap_idle_txns` and `drain_ready` inline, so
@@ -212,25 +217,33 @@ end, because declining one threw away the TableDef/Schema/`plan::choose` that
 (n > 0) stops the scan, so a predicate that would error on a row past the nth
 kept one no longer raises — SQL Server's Top operator does the same.
 
-**(c) THE REPLY CHANNEL — AND WHY IT IS NOT THE BOUNDED CHANNEL THIS PLAN
-DESCRIBED.** Read this before building it. The bullet's own words — "bounded
-sinks stream result rows" — named a design that **does not work here**, and this
-plan asserted twice that #99/#100 had made it survivable. That was wrong.
+**(c) The reply channel is PLUMBED (#103) — and it is unbounded, which is the
+design, not a concession.** The bullet's own words — "bounded sinks stream
+result rows" — named a design that does not work here, and this plan asserted
+twice that #99/#100 had made it survivable. That was wrong — but the refutation
+kills the **bound**, not the **streaming**. `UnboundedSender::send` is a plain
+synchronous call: the worker never blocks, so none of the lock-holding hazards
+below can arise, and the memory ceiling is the whole result — which is exactly
+what the buffered path held *unconditionally, for every client*. Never worse;
+bounded by what is in flight for any client that keeps up. The only thing the
+bound ever bought — a hard cap against a client that stops reading entirely —
+still needs cap-and-spill or Stage 13's RCSI, as before. **Lesson: when a
+design is refuted, ask which specific word is wrong before concluding the whole
+thing waits.**
 
-The refutation needs no stalled client, no malicious client, and no bug. **A
-well-behaved client fetching a large result over a normal link is enough.** With
-the worker `blocking_send`ing into a bounded channel, the worker blocks *inside*
-the batch — which is to say **while the batch holds its locks**, since
-`sched.finish` runs after `sql_batch_with_params` returns. A 10M-row result over
-a slow link holds `Table(t)` S for minutes. `LOCK_WAIT_TIMEOUT` is **5 s**. Every
-other session touching that table parks, stays non-grantable for the whole
-transfer, and is reaped with **1205**. There is no tuning that escapes it: the
-same constant bounds a lock wait and backstops deadlock detection, so raising it
-past the longest legitimate transfer means unbounded waits with no backstop.
-
-Today's materialize-then-reply costs memory but is *bounded by scan time, which
-is local*. Backpressure makes the lock hold **client-controlled and unbounded**.
-That is the whole of it. The mechanisms, each verified against the code:
+The refutation of the bound, kept because it applies to *any* future design
+that lets a client's pace reach a worker: it needs no stalled client, no
+malicious client, and no bug. **A well-behaved client fetching a large result
+over a normal link is enough.** With the worker `blocking_send`ing into a
+bounded channel, the worker blocks *inside* the batch — which is to say **while
+the batch holds its locks**, since `sched.finish` runs after
+`sql_batch_with_params` returns. A 10M-row result over a slow link holds
+`Table(t)` S for minutes. `LOCK_WAIT_TIMEOUT` is **5 s**. Every other session
+touching that table parks, stays non-grantable for the whole transfer, and is
+reaped with **1205**. There is no tuning that escapes it: the same constant
+bounds a lock wait and backstops deadlock detection, so raising it past the
+longest legitimate transfer means unbounded waits with no backstop. The
+mechanisms, each verified against the code:
 
 - **The stalled holder is immortal by construction.** `abort_parked_victim` opens
   with `self.parked.remove(idx)`, and `find_deadlock_victim` iterates `parked`.
@@ -280,7 +293,10 @@ lock-wait cycle"*. Streaming to a client does not add a lock wait; it adds a
 cannot be aborted, and has no deadline. Since locks are released only after the
 batch returns, **the producer must run to completion before its locks go — so
 the reply must be buffered somewhere.** A bounded channel with backpressure
-contradicts that directly. Two designs do not:
+contradicts that directly. **The shipped answer (#103) buffers in the channel
+itself** — unbounded, so the producer finishes at its own pace and the ceiling
+is the whole result, same as the old buffered path. Two designs give a *hard*
+cap, if one is ever needed:
 
 1. **Cap and spill.** A sink capped at N rows / M bytes that spills past the cap
    to temp extents, which `RowSpool` (#78) already does for the external merge
@@ -304,41 +320,64 @@ with a 1205 that names a deadlock that never happened. Streaming would only make
 the window client-controlled. The honest fix is to distinguish "blocked behind a
 live holder" (wait, or report 1222) from "in a cycle" (1205).
 
-**Still usable from the cut draft** at branch `archive/bounded-sink-draft`
-(truthdb) — the *rendering* legs are independent of the channel's shape and
-survive the refutation:
+**What #103 shipped** (the archived draft's rendering legs, reworked onto the
+unbounded channel, with both of its known bugs fixed rather than re-shipped):
 
 - `BatchEvent` (`Columns` / `Rows` chunks / `StatementDone{count,in_transaction}`
-  / `Error` / terminal `Complete`|`Failed`) and `collect_reply`, which drains
-  events back into a whole `BatchReply` so `run_batch` and every existing caller
-  keep working unchanged.
-- `send_rowset`'s chunking (verified for 0/1/255/256/257/512/1000 rows).
+  / `Error` / terminal `Complete`|`Failed`), `BatchSink` (the unbounded sender),
+  and `collect_reply`, which drains events back into a whole `BatchReply` so
+  `run_batch` and every existing caller keep working unchanged.
 - `BatchRender` + `stream_reply`: the renderer with the **deferred DONE**
   (streaming cannot know the last statement by index, so each DONE waits for the
   next event to settle `DONE_MORE`), and the `select!` over `events.recv()` and
-  the Attention read, using `tokio::io::split`.
+  the Attention read. A channel that closes without a terminal event renders a
+  clean 50000, not an empty EOM (the draft's `None => break` bug).
 
-**Two bugs in that draft, found by review — fix them, do not re-ship them:**
+**Two bugs #103's review caught, both instructive:**
 
-1. **`None => break` renders a message with no DONE at all.** If the channel
-   closes without a terminal event (an executor panic; the pool dropping a call
-   at shutdown), `stream_reply` falls through to `finish()` and emits an empty
-   EOM packet. The old path turned a dropped `oneshot` into a clean 50000 error.
-   Render `Failed(Unavailable)` on that arm. Same for a channel that closes after
-   `StatementDone` but before `Complete` — the pending DONE is dropped, leaving a
-   result set unterminated.
-2. **A late Attention appends a second DONE after the final one** (`got > 0`
-   partial-header path). Rare; decide it deliberately.
+1. **CRITICAL — deleting `let _ = (&mut work).await;` on disconnect broke
+   `take_ctx`'s invariant.** That await was the only thing keeping
+   `serve_connection` from calling `close_session` while the batch still ran;
+   without it, `locks.release_all` fired on a running batch and another session
+   read hundreds of rows of an uncommitted transaction before its rollback. The
+   `Default` placeholder context reports no open transaction, so `close_session`
+   skipped the rollback too. Fix: `drain_to_end` on *both* early-exit paths
+   (disconnect and the pipelined-packet protocol error). **When removing an
+   `await`, ask what it was ordering.**
+2. **HIGH — a late Attention's second DONE in the same message hangs
+   go-mssqldb forever.** `processSingleResponse` returns at the first DONE with
+   `DONE_MORE` clear and never parses behind it; `readCancelConfirmation` then
+   blocks in `io.ReadFull` with `ConnTimeout` defaulting to 0. The driver's own
+   comment expects the cancel ack as a **separate response** — which the same
+   file already did for a standalone Attention, 250 lines up. Reproduced against
+   real go-mssqldb v1.8.0 through a proxy: 3/3 hung before, 3/3 clean after. No
+   conformance script sends an Attention, so conformance cannot catch this
+   class. **Reason about a driver by reading it, not about it** (#88's lesson,
+   repeated).
 
-**One wire change any streamed reply forces**, so decide it once: today *every*
-DONE in a batch carries the batch's **final** `in_transaction`, retroactively —
-`write_batch_tokens` takes one bool and stamps it on all of them. A reply that
-emits a statement's DONE before the next statement runs cannot do that; each DONE
-must carry its own state. That is the more faithful behaviour (`BEGIN TRAN;
-SELECT 1; COMMIT` should be INXACT=1,1,0, not 0,0,0), but it is wire-visible and
-the #97 oracle test pins the current bytes on purpose. `Complete{in_transaction}`
-must still carry the batch's final state: `handle_tm_request` reads it to decide
-whether a terminating ENVCHANGE fires (#88).
+#104 fixed the #96 sliced-scan flake it exposed in CI: the test asserted a probe
+thread *won* the storage lock mid-scan, but `std::sync::Mutex` is not fair, so
+that asserts the scheduler's behaviour (~35% failure under load). It now asserts
+the deterministic mechanism — the scan acquires the lock once per slice, which a
+non-reentrant mutex cannot do without releasing between slices. **Never assert
+that another thread wins an unfair mutex.**
+
+**The remaining leg: the executor still materializes.** `send_outcome` streams a
+*finished* `BatchOutcome`, so events reach the channel only after the whole
+batch ran — first-row latency and peak memory are unchanged. The next piece is
+statements emitting their events as they run. **One wire change that forces**,
+so decide it once: today *every* DONE in a batch carries the batch's **final**
+`in_transaction`, retroactively. A reply that emits a statement's DONE before
+the next statement runs cannot do that; each DONE must carry its own state. That
+is the more faithful behaviour (`BEGIN TRAN; SELECT 1; COMMIT` should be
+INXACT=1,1,0, not 0,0,0), but it is wire-visible and the #97 oracle test pins
+the current bytes on purpose. `Complete{in_transaction}` must still carry the
+batch's final state: `handle_tm_request` reads it to decide whether a
+terminating ENVCHANGE fires (#88). And durability must keep its ordering: today
+nothing reaches the client before `finalize_durability` fsyncs at batch end, so
+a streamed DONE that acknowledges a commit (an autocommit statement, the
+outermost `COMMIT`) must not be emitted before that commit is fsync-durable —
+otherwise a client can act on an acknowledgment a crash then silently revokes.
 
 **The generalisable lesson, now paid for twice:** the scheduler's liveness
 quietly assumes a worker returns promptly, and *anything* that lets a client
@@ -396,7 +435,7 @@ Real tools become the daily harness from here.
 
 ### Stage 6 — Sessions, transactions, locking; driver transactions over TDS
 The big architectural stage — do it before more SQL piles onto the global mutex.
-- 🟡 **Engine actor**: replace `Arc<Mutex<Engine>>` with `EngineHandle` (mpsc of `EngineCall`) served by an engine-owned thread(+later pool); bounded sinks stream result rows; sessions live engine-side in a `SessionManager` (txn state, SET options; prepared statements later). Connection drop → rollback + lock release; idle/txn reaper. *(done #89: **idle/txn reaper**. Connection drop already rolled back and released locks, but only covers a connection that actually closed — a client that opens a transaction then goes silent (crashed process, severed network) held its locks until the OS noticed the dead socket, which can take hours. Sessions stamp `last_activity`; the worker loop sweeps those idle past `idle_txn_timeout` with a transaction open, rolling back and releasing locks. A running batch is unreapable by construction (`take_ctx` moved its context out, so the session reports no open transaction); a parked batch's session is skipped. Default 10 min — a deliberate divergence from SQL Server, which never reaps — and disableable. Adversarial review caught a **critical** bug the reaper made reachable: `TxnContext::abort` never cleared `savepoints`, harmless while every caller discarded the context but not once a session survives its own abort — a stale savepoint then either silently discarded committed rows or panicked a worker permanently; it also caught a reaped session silently autocommitting the client's later work (now reported as 1205). **Gap remaining: results are still fully materialized in `BatchOutcome`, not streamed via bounded sinks.** Two legs of that are done. #92 gave the B+ tree and heap a **resumable scan cursor** (`scan_from(ctx, cursor, budget, out)`; `scan` is reimplemented on it, so every existing caller exercises it; a resumed page is checked against its object, since nothing pins it between slices and a recycled page would otherwise be read as ours). #96 put the **read path on sliced scans** — `rel_scan_sliced` takes the storage lock once per 1024-row slice, so one large SELECT no longer blocks every other session for its whole walk (pinned by a test that another thread *does* get the lock mid-scan, and fails under a single hold). Deliberately not applied to `rel_scan` itself: the integrity checks (FK parent-side probe, FK self-reference in UPDATE, ALTER TABLE WITH CHECK) need its atomic single hold, since a validation that missed a row to a mid-walk page split would admit a violating row. #97 did **the TDS writer leg**. A `MessageWriter` owns one packet's worth of buffer and emits each packet as it fills; tokens render through it, handing the scratch over every `ROW_FLUSH_BYTES` inside a result set, so **rendering is constant-memory** instead of encoding the whole token stream into one `Vec<u8>` and chunking it afterwards. `write_message` is reimplemented on the same writer, so packet framing has one implementation. The bytes are identical — pinned by an oracle test that keeps the old `build_batch_tokens` **verbatim** and asserts every batch shape reaches the wire byte-for-byte the same through both (empty, zero-row/small/5000-row rowsets, row counts, DDL, three statements, results-then-error, error alone; with and without an open transaction; at two packet sizes). Two framing details it cost a bug each to learn: a payload that *exactly* fills a packet must end as that packet with EOM, not a full packet plus an empty one (hence the strictly-greater test in `MessageWriter::write`), and tokens may straddle packet boundaries, so nothing is padded to keep one whole. **#101 did the executor leg**: `scan_plan`/`scan_select` run a single-table SELECT of bare columns a row at a time — sliced scan → filter → project, with `TOP n` stopping the scan — so the *input* is no longer materialized (peak heap on 50k rows: `SELECT *` 21.4 MiB → 6.9 MiB; `SELECT TOP 1 *` 8.4 MiB → 158 KiB, constant in table size, 16.3 ms → 0.30 ms). Four gate rejections each cost a silently-wrong answer to find: `sys.*` (a quoted `[sys.tables]` is a creatable user table, and resolving the catalog first answered `SELECT * FROM sys.tables` with *its* columns), a view (no columns in its TableDef and `root_page` 0 → a wildcard expanded to zero columns and the scan read the catalog root), `TOP 0` (207/4145 are raised *by evaluating* the predicate, so honouring TOP 0 answered an invalid query with an empty result set), and an index seek — *not* rejected in the end, since declining threw away the TableDef/Schema/`plan::choose` `build_table_source` then recomputed (13–23% on point lookups; taking the planner's path instead made them ~23% faster than before). **Gap remaining: the reply is still a whole `BatchOutcome` over a `oneshot`** — and it will not be closed by the bounded channel this bullet names. **That design is refuted**: a worker `blocking_send`ing holds its table locks at the client's pace, `LOCK_WAIT_TIMEOUT` is 5 s, and victims are drawn only from the *parked* queue (`abort_parked_victim`, `find_deadlock_victim`), so the engine kills the innocent waiters with a false 1205 and cannot touch the stalled holder — which `take_ctx` also hides from the idle reaper and which the waits-for graph has no node for. A well-behaved client on a slow link is enough; no pathology needed. The replacements are cap-and-spill (bounded memory, no backpressure — `RowSpool` from #78 already spills) or Stage 13's RCSI (a reader that takes no S locks, which is exactly why SQL Server survives `ASYNC_NETWORK_IO`). See **(c)** in "Where the work is right now" for the full mechanism list. **A rejected design, recorded so it is not rebuilt:** the first draft of #97 also did the reply-channel leg — a *bounded* (depth 4) channel of row events, the plan's "bounded sinks", with the worker `blocking_send`ing. Two independent adversarial reviews rejected it for the same reason, and were right. **The engine's reapers, the parked-batch drain, and shutdown all run on the request workers**, so a worker blocking on a slow client's socket does not degrade that client — it wedges the engine: at `workers = cores-2` (2 on a 4-core box) two clients that stop reading are the whole pool, the idle-txn reaper is disabled by exactly the scenario it exists for, `CloseSession` never releases its locks, and the shutdown pill is never dequeued. The Attention escape hatch cannot fire either, since a worker blocked writing never polls the read. **Backpressure onto worker threads needs those duties moved off them first** — and it buys nothing until the executor streams, so the order is: liveness prerequisites → bounded sink + executor streaming, together. **The constraint that shapes that last leg:** a computed column's type comes from `infer_type` over *every* value in the column, but TDS must send COLMETADATA before the first row — so `SELECT v*2 FROM t` cannot stream without static type derivation from the expression tree (which would change result types repo-wide, so it is its own work); `SELECT v FROM t` takes its type from the schema and can. Still coupled to the Stage 8 streaming-scan item.)*
+- 🟡 **Engine actor**: replace `Arc<Mutex<Engine>>` with `EngineHandle` (mpsc of `EngineCall`) served by an engine-owned thread(+later pool); bounded sinks stream result rows; sessions live engine-side in a `SessionManager` (txn state, SET options; prepared statements later). Connection drop → rollback + lock release; idle/txn reaper. *(done #89: **idle/txn reaper**. Connection drop already rolled back and released locks, but only covers a connection that actually closed — a client that opens a transaction then goes silent (crashed process, severed network) held its locks until the OS noticed the dead socket, which can take hours. Sessions stamp `last_activity`; the worker loop sweeps those idle past `idle_txn_timeout` with a transaction open, rolling back and releasing locks. A running batch is unreapable by construction (`take_ctx` moved its context out, so the session reports no open transaction); a parked batch's session is skipped. Default 10 min — a deliberate divergence from SQL Server, which never reaps — and disableable. Adversarial review caught a **critical** bug the reaper made reachable: `TxnContext::abort` never cleared `savepoints`, harmless while every caller discarded the context but not once a session survives its own abort — a stale savepoint then either silently discarded committed rows or panicked a worker permanently; it also caught a reaped session silently autocommitting the client's later work (now reported as 1205). **Gap remaining: results are still fully materialized in `BatchOutcome`, not streamed via bounded sinks.** Two legs of that are done. #92 gave the B+ tree and heap a **resumable scan cursor** (`scan_from(ctx, cursor, budget, out)`; `scan` is reimplemented on it, so every existing caller exercises it; a resumed page is checked against its object, since nothing pins it between slices and a recycled page would otherwise be read as ours). #96 put the **read path on sliced scans** — `rel_scan_sliced` takes the storage lock once per 1024-row slice, so one large SELECT no longer blocks every other session for its whole walk (pinned by a test that another thread *does* get the lock mid-scan, and fails under a single hold). Deliberately not applied to `rel_scan` itself: the integrity checks (FK parent-side probe, FK self-reference in UPDATE, ALTER TABLE WITH CHECK) need its atomic single hold, since a validation that missed a row to a mid-walk page split would admit a violating row. #97 did **the TDS writer leg**. A `MessageWriter` owns one packet's worth of buffer and emits each packet as it fills; tokens render through it, handing the scratch over every `ROW_FLUSH_BYTES` inside a result set, so **rendering is constant-memory** instead of encoding the whole token stream into one `Vec<u8>` and chunking it afterwards. `write_message` is reimplemented on the same writer, so packet framing has one implementation. The bytes are identical — pinned by an oracle test that keeps the old `build_batch_tokens` **verbatim** and asserts every batch shape reaches the wire byte-for-byte the same through both (empty, zero-row/small/5000-row rowsets, row counts, DDL, three statements, results-then-error, error alone; with and without an open transaction; at two packet sizes). Two framing details it cost a bug each to learn: a payload that *exactly* fills a packet must end as that packet with EOM, not a full packet plus an empty one (hence the strictly-greater test in `MessageWriter::write`), and tokens may straddle packet boundaries, so nothing is padded to keep one whole. **#101 did the executor leg**: `scan_plan`/`scan_select` run a single-table SELECT of bare columns a row at a time — sliced scan → filter → project, with `TOP n` stopping the scan — so the *input* is no longer materialized (peak heap on 50k rows: `SELECT *` 21.4 MiB → 6.9 MiB; `SELECT TOP 1 *` 8.4 MiB → 158 KiB, constant in table size, 16.3 ms → 0.30 ms). Four gate rejections each cost a silently-wrong answer to find: `sys.*` (a quoted `[sys.tables]` is a creatable user table, and resolving the catalog first answered `SELECT * FROM sys.tables` with *its* columns), a view (no columns in its TableDef and `root_page` 0 → a wildcard expanded to zero columns and the scan read the catalog root), `TOP 0` (207/4145 are raised *by evaluating* the predicate, so honouring TOP 0 answered an invalid query with an empty result set), and an index seek — *not* rejected in the end, since declining threw away the TableDef/Schema/`plan::choose` `build_table_source` then recomputed (13–23% on point lookups; taking the planner's path instead made them ~23% faster than before). **#103 did the reply-channel leg**: a batch's reply now travels as a stream of `BatchEvent`s (`Columns` / `Rows` chunks / `StatementDone` / `Error` / terminal `Complete`|`Failed`) over an **unbounded** mpsc — `BatchSink` engine-side, `stream_reply`/`BatchRender` with the deferred DONE on the TDS side, `collect_reply` reassembling a whole `BatchReply` for the callers that want one. Wire-identical: the #97 oracle drives the real `stream_reply` through a real channel byte-for-byte. Unbounded is the design, not a concession — **the bounded channel this bullet named is refuted**: a worker `blocking_send`ing holds its table locks at the client's pace, `LOCK_WAIT_TIMEOUT` is 5 s, and victims are drawn only from the *parked* queue (`abort_parked_victim`, `find_deadlock_victim`), so the engine kills the innocent waiters with a false 1205 and cannot touch the stalled holder — which `take_ctx` also hides from the idle reaper and which the waits-for graph has no node for. A well-behaved client on a slow link is enough; no pathology needed. Dropping the *bound* keeps the streaming and dissolves every one of those hazards: the send never blocks, and the memory ceiling — the whole result — is exactly what the buffered path held unconditionally for every client. A *hard* cap still means cap-and-spill (`RowSpool` from #78 already spills) or Stage 13's RCSI (a reader that takes no S locks, which is exactly why SQL Server survives `ASYNC_NETWORK_IO`). See **(c)** in "Where the work is right now" for the full mechanism list. **Gap remaining: the executor still materializes** — `send_outcome` streams a *finished* `BatchOutcome`, so events reach the channel only after the whole batch ran, and first-row latency and peak memory are unchanged. Closing it means statements emit their events as they run, which forces `DONE_INXACT` from batch-final to per-statement (`Complete{in_transaction}` must stay batch-final — `handle_tm_request` reads it, #88) and must keep durability's ordering (no DONE that acknowledges a commit before its fsync). **The constraint that shapes that leg:** a computed column's type comes from `infer_type` over *every* value in the column, but TDS must send COLMETADATA before the first row — so `SELECT v*2 FROM t` cannot stream without static type derivation from the expression tree (which would change result types repo-wide, so it is its own work); `SELECT v FROM t` takes its type from the schema and can. Still coupled to the Stage 8 streaming-scan item.)*
 - ✅ SQL: `BEGIN TRAN`/`COMMIT`/`ROLLBACK`, `@@TRANCOUNT`, `SET XACT_ABORT`, T-SQL nesting semantics, statement-level atomicity (statement failure keeps the txn unless XACT_ABORT/severity≥17), DDL in explicit txns disallowed for now (3902/3903 errors). *(done #83: **statement-level atomicity + `SET XACT_ABORT`**. A new ARIES `rollback_to(savepoint)` (undo-log suffix undone via the existing `undo_one`/CLR discipline, crash-safe) wraps every explicit-txn statement, so a failed statement undoes only its own writes. `SET XACT_ABORT OFF` (default) then rolls back just the statement and the batch continues; `ON`, or error severity ≥ 17, dooms the whole txn (3930). Constraint errors (2627/2601/515/547, sev 14–16) are non-dooming. Verified by a crash-mid-txn recovery test that a post-savepoint crash undoes cleanly without double-undo. Also done #84: **`SAVE TRANSACTION` / `ROLLBACK TRANSACTION <name>`** (named savepoints reusing `rollback_to`). Also done #87: **TRY/CATCH + `XACT_STATE()` + `ERROR_*()`**. The batch loop became a recursive `run_block(.., in_try)`: inside a `TRY` *any* statement error transfers to the matching `CATCH` (the failed statement's writes are already undone to its per-statement savepoint, so the `CATCH` sees a consistent txn); `XACT_ABORT ON`/severity≥17 still dooms the txn but control still reaches the `CATCH`, where `XACT_STATE()` reports -1. Caught errors stack, so nested TRY/CATCH restore the outer error. The doomed gate was corrected to SQL Server semantics — an uncommittable txn rejects *log writes* (3930) but allows reads/`SET`/`DECLARE`, without which `SELECT XACT_STATE()` in a doomed `CATCH` was impossible. Adversarial review caught a real parser bug: with no reserved-word set the alias parsers read a bare `END` as an implicit alias, so the canonical semicolon-less `SELECT 1 END TRY` failed 102. Remaining (simplification, matching this bullet's own spec): per-error batch-vs-statement fidelity is the severity≥17 cut, not SQL Server's per-error table; `ERROR_LINE()`=0 and `ERROR_PROCEDURE()`=NULL (no statement-line map / stored procs yet).)*
 - ✅ Txn manager on ARIES (commit = flush-to-LSN; rollback = walk undo chain emitting CLRs); lock manager (IS/IX/S/X; Database/Table keys now, Row keys Stage 12; FIFO queues; 5 s wait timeout → abort youngest). Isolation: READ UNCOMMITTED/READ COMMITTED/REPEATABLE READ/SERIALIZABLE, lock-based (SERIALIZABLE correct via table locks until key-range locks).
 - ✅ **TDS Transaction Manager requests** (TM_BEGIN/COMMIT/ROLLBACK_XACT + ENVCHANGE 8/9/10 descriptors, validated in ALL_HEADERS) — `db.BeginTx()` / `setAutoCommit(false)` work as soon as transactions exist. *(done #88: `parse_all_headers` validates the block per MS-TDS 2.2.5.2 — TotalLength covers itself and fits the payload, each entry's HeaderLength covers its own length+type and stays inside the block (so the walk always advances and cannot overrun), a type-2 Transaction Descriptor header carries its full u64+u32; unknown types are skipped. A malformed block is now a protocol error instead of being silently reinterpreted as request data, which is what the old `skip_all_headers` did — an out-of-range TotalLength meant "no headers", handing header bytes to the SQL/RPC decoder. `check_transaction_descriptor` rejects a COMMIT/ROLLBACK naming a transaction the connection is not in. **A TM begin is deliberately not validated**: its descriptor names no transaction yet and real drivers send a placeholder — go-mssqldb v1.8.0 (the version CI pins) hardcodes 0 on begin while using the live `tranid` elsewhere — so validating it killed correct clients' connections; adversarial review caught this, and the test client now models that asymmetry. Review also found the TM handler announced a **nested** commit as ending the transaction (ENVCHANGE 9 + descriptor cleared) while ignoring `reply.in_transaction`, contradicting its own DONE(INXACT); a terminating ENVCHANGE now fires only when the transaction actually ended.)*
@@ -564,13 +603,13 @@ Resolved coupling (was "forward coupling to watch"): making WHERE equality colla
 - **Concurrency: row locks for point ops, still coarse elsewhere (Stage 12).** *(Updated by PR #72.)* Point INSERT/UPDATE/DELETE now take Table IX + a `Row X`, so writers to different rows of one table run concurrently (with intent escalation and FK-parent / unique-index / character-key / float-key guards). Storage access still funnels through a single `Mutex<StorageFile>` (no sharded buffer-pool latches / partitioned lock manager / sharded txn table), and there are **no key-range locks** — SERIALIZABLE still leans on table locks for phantoms. Group commit's win shows only on slow disks. The deadlock detector runs synchronously when a batch parks (plus a 5 s timeout), not the planned 200 ms poll.
 - **Collation: case-insensitive equality done, locale ordering pending (Stage 5).** *(Updated by PR #82.)* String **equality** is now case-insensitive by default everywhere — query operators and the storage key layer both case-fold (character key bytes are folded, so PK/UNIQUE/FK/seeks match case-insensitively), honouring explicit `_CS`/`_BIN`. Remaining: **ordering** is still icu-`compare` (ORDER BY) / binary (index keys), not full **collation sort keys** — so Swedish/Finnish *sort* order and `_AI` accent-insensitivity are unbuilt (blocked by `icu_collator` 1.5's missing sort-key API); collation **precedence** is simplified (any `_CS` operand forces exact, no conflict error); default collation still hardcoded.
 - **Checkpoints are quiescent, not fuzzy (Stage 2).** ARIES analysis/redo/undo + CLRs are correct, but a checkpoint is skipped while any transaction is active rather than the planned fuzzy checkpoint (begin/end + DPT/ATT snapshots). Correct, but the WAL can grow under a long-running transaction.
-- **Result rows are materialized in the reply (Stage 6).** *(Updated by #101.)* The *executor* no longer materializes the input of a single-table bare-column SELECT (sliced scan → filter → project, `TOP n` stops the scan), but the reply is still a whole `BatchOutcome` over a `oneshot`. The plan's "bounded sinks" answer to that is **refuted** — backpressure onto a worker holds its table locks at the client's pace, and no code path can abort a running batch — so the remaining leg is cap-and-spill or Stage 13's RCSI, not a bounded channel.
+- **Result rows are materialized in the executor, streamed in the reply (Stage 6).** *(Updated by #101, #103.)* The *executor* no longer materializes the input of a single-table bare-column SELECT (sliced scan → filter → project, `TOP n` stops the scan), and the reply now travels as a stream of `BatchEvent`s over an **unbounded** channel (#103, wire-identical). The plan's "bounded sinks" answer is **refuted** — backpressure onto a worker holds its table locks at the client's pace, and no code path can abort a running batch — and the resolution was to drop the *bound*, not the streaming. Remaining: the executor still materializes each statement's result before `send_outcome` streams it; a *hard* memory cap would be cap-and-spill or Stage 13's RCSI.
 - **Prepared statements are minimal (Stage 9).** `sp_executesql` (parameterized queries) works; the `sp_prepare`/`sp_execute`/`sp_prepexec`/`sp_unprepare` handle family, per-session `PreparedStatement` caching + rebind-after-DDL, and RETURNVALUE/DONEPROC/DONEINPROC tokens are not built.
 
 ### Smaller deferred items (self-contained follow-ups)
 
 - **A 5 s lock wait reports 1205, a deadlock that did not happen (Stage 12).** Found while reviewing #101 and *not* caused by it: `reap_expired` kills any waiter parked past `LOCK_WAIT_TIMEOUT` whose locks are still ungrantable, with the deadlock-victim error. So *any* batch running longer than 5 s — a big scan, today — makes every concurrent session on its table fail with a 1205 naming a cycle that never existed. SQL Server defaults `LOCK_TIMEOUT` to -1 (waiters wait; the operator kills the head blocker) and raises **1222** when an opt-in timeout fires; 1205 is only ever a real cycle. Distinguishing "blocked behind a live holder" from "in a cycle" is the fix, and it is a prerequisite for any design that lengthens a lock hold.
-- **`a_sliced_scan_lets_another_thread_take_the_storage_lock_mid_scan` is flaky under CPU starvation** (`relstore/tests.rs`, from #96). It asserts a prober thread got the storage lock during a sliced scan; with the box saturated (8 concurrent full-suite runs on 24 cores) it fails ~35% of the time, bisected to before #101. It does not flake at normal load (0/20 alone, 0/6 full-suite runs here). Pre-existing; needs the assertion made scheduling-independent rather than a retry.
+- ~~`a_sliced_scan_lets_another_thread_take_the_storage_lock_mid_scan` is flaky under CPU starvation~~ — **fixed (#104)**: the test asserted a prober thread *won* the storage lock mid-scan, which is the scheduler's behaviour, not the module's (`std::sync::Mutex` is not fair; ~35% failure under 8-way load). It now asserts the deterministic mechanism — the scan acquires the lock once per slice, which a non-reentrant mutex cannot do without releasing between slices — and fails when the per-slice release is hoisted. 0/25 failures under 8-way load.
 
 - ~~Correlated subqueries (Stage 11)~~ — **done (#73)** for scalar/EXISTS/IN in WHERE over base-table/join subqueries; a correlated ref inside a derived-table/view subquery, or in the SELECT list / HAVING / an UPDATE-DELETE WHERE, still errors 207.
 - `ALTER TABLE ADD <column>` (Stage 10) — **not a quick item**: `decode_row` is strict, so it needs a self-describing row format (column count) or a full-table rewrite.
