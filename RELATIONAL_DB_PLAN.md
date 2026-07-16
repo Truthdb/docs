@@ -147,7 +147,7 @@ when actually blocked or asked.
 
 ### Where the work is right now (2026-07-16)
 
-Yellow bullets: 23 → 7. Merged: truthdb #87–#115, docs #41–#70.
+Yellow bullets: 23 → 5. Merged: truthdb #87–#116, docs #41–#71.
 
 **Stage 6's Engine actor bullet and Stage 7's planner bullet are both
 CLOSED** (#105 streaming; #106 covering seeks via INCLUDE leaves; #107 row
@@ -172,9 +172,10 @@ against the driver's own source).** **STAGE 10 IS FULLY GREEN too (#115: ALTER T
 transactional row rewrite — the "metadata-only" design was refuted by the
 positional row codec; see the Stage 10 bullet for the design finding —
 plus a stale-yellow audit of the enforcement bullet).** The remaining
-yellows are Stage 11 (SELECT-list/HAVING/derived-table correlation; EXEC
-sp_executesql text path) and Stage 12 (sharded latches/partitioned lock
-manager; heartbeats-during-scan test).
+yellows are Stage 11's EXEC sp_executesql text path (#116 closed the
+correlation bullet and its fixtures — see the Stage 11 bullets for the
+source-identity binding lesson) and Stage 12 (sharded latches/partitioned
+lock manager; heartbeats-during-scan test).
 
 The result-streaming legs, all merged:
 
@@ -519,9 +520,9 @@ The big architectural stage — do it before more SQL piles onto the global mute
 - ✅ Exit: constraint slt matrix (NULL-FK skip-enforcement trap included); ALTER + old-row reads; metadata durability. *(done #115: the slt matrix covers old-row reads across nullable/DEFAULT/NOT NULL DEFAULT, frozen-vs-live defaults, index seeks after ADD, heap tables, the 8→9-column null-bitmap-growth boundary with NULLs on both sides, and UPDATE/DELETE of rewritten rows; a Rust test pins durability across a real WAL-recovery reopen and atomicity under fault injection mid-rewrite. Teeth: a catalog-only ALTER fails the old-row reads with 1701. The constraint matrix (foreign_keys.slt, check_constraints.slt) predates this.)*
 
 ### Stage 11 — Subqueries, views, variables
-- 🟡 Derived tables, scalar subqueries (512 on >1 row), `IN (SELECT)`, `[NOT] EXISTS` (semi/anti hash joins uncorrelated; per-row `SubqueryExec` correlated — correct, slow, honest), non-recursive CTEs. *(done #73: per-row apply for correlated `EXISTS`/`NOT EXISTS`/scalar/`IN` **in the WHERE clause** over base tables and joins — inner-shadows-outer scoping, ambiguous-inner not rebound, NULL correlation; covered by `correlated_subqueries.slt`. Uncorrelated derived/scalar/IN/EXISTS/CTE done. Gap: correlation is wired only into the WHERE loop — a correlated subquery in the **SELECT list** (the most common real-world form) or in **HAVING** still errors 207, as does a correlated reference inside a **derived table/view** (`from_column_names` reads scope from the catalog only, so those are never classified as correlated).)*
+- 🟡 Derived tables, scalar subqueries (512 on >1 row), `IN (SELECT)`, `[NOT] EXISTS` (semi/anti hash joins uncorrelated; per-row `SubqueryExec` correlated — correct, slow, honest), non-recursive CTEs. *(done #73: per-row apply for correlated `EXISTS`/`NOT EXISTS`/scalar/`IN` **in the WHERE clause** over base tables and joins — inner-shadows-outer scoping, ambiguous-inner not rebound, NULL correlation; covered by `correlated_subqueries.slt`. Uncorrelated derived/scalar/IN/EXISTS/CTE done. done #116: correlation in the **SELECT list** (incl. the grouped-projection case), **HAVING**, and inside **derived-table bodies** — all on the same per-row/per-group literal substitution. Group-key references bind by SOURCE IDENTITY (ref and bare-column group key must resolve to the same FROM column; the review caught the bare-name version silently binding a non-grouped sibling — an error→silent-wrong-result regression, fixed + slt-pinned). An outer ref inside an AGGREGATE argument (SQL Server outer-aggregate semantics) bails to a clean error rather than substituting. Remaining, unchanged limitations: correlation over a VIEW body errors 207 (from_column_names returns None for views); nested skip-level correlation (innermost → outermost) errors 207 (pre-existing); GROUP BY/ORDER BY-position correlation errors 207.)*
 - 🟡 `CREATE/DROP VIEW` (source in `sys.sql_modules`, inline expansion at bind, depth-capped cycles, read-only); batch variables `DECLARE @v` / `SET` / `SELECT @v =`; `EXEC sp_executesql` as T-SQL text (same machinery as the RPC path). *(done: `sys.sql_modules` exposes each view's definition (backed by `TableDef.view_query`), and view-over-view expands recursively at bind via `build_derived_source` + `ViewDepthGuard`, with self/mutual cycles depth-capped to a clean error — covered by `views_over_views.slt` (3-level chain, aggregate + join over a nested view, definition text, cycle caps). Gap: no `EXEC sp_executesql` **T-SQL text** path — the parser has no `EXEC` statement at all, so `sp_executesql` is reachable only over the TDS RPC path.)*
-- 🟡 Exit: correlated-subquery slt fixtures; view-over-view; parser corpus growth. *(done: `correlated_subqueries.slt` covers correlated `EXISTS`/`NOT EXISTS`/scalar/`IN` plus inner-shadows-outer scoping, ambiguous-inner-not-rebound and NULL correlation; `views_over_views.slt` asserts real 3-level expansion, aggregate + join over a nested view, `sys.sql_modules` text, and self/mutual cycle capping. Gap: the correlated fixtures cover **WHERE-clause correlation only** — which is all the engine supports; SELECT-list/HAVING/derived-table correlation errors 207 and so is uncovered. "Parser corpus growth" states no measurable target, so it can be neither met nor refuted.)*
+- 🟡 Exit: correlated-subquery slt fixtures; view-over-view; parser corpus growth. *(done: `correlated_subqueries.slt` covers correlated `EXISTS`/`NOT EXISTS`/scalar/`IN` plus inner-shadows-outer scoping, ambiguous-inner-not-rebound and NULL correlation; `views_over_views.slt` asserts real 3-level expansion, aggregate + join over a nested view, `sys.sql_modules` text, and self/mutual cycle capping. done #116: the fixtures now cover SELECT-list (scalar, EXISTS-in-CASE, NULL correlation, inner-shadows-outer, grouped projection), HAVING (EXISTS, scalar-vs-aggregate, qualified refs, the two must-error regression cases), and derived-body correlation with alias shadowing. "Parser corpus growth" states no measurable target, so it can be neither met nor refuted — dropped as unfalsifiable.)*
 
 ### Stage 12 — Concurrency scale-out: worker pool, group commit, row locks
 - 🟡 Engine actor becomes router + fixed worker-thread pool; shared services get internal synchronization (catalog RwLock, sharded buffer-pool latches, partitioned lock manager, sharded txn table). Search state behind one RwLock on the same pool. *(gap: worker pool + search RwLock done, but a single coarse `Mutex<StorageFile>` — no sharded buffer-pool latches, partitioned lock manager, or sharded txn table)*
