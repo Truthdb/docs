@@ -147,7 +147,7 @@ when actually blocked or asked.
 
 ### Where the work is right now (2026-07-16)
 
-Yellow bullets: 23 → 13. Merged: truthdb #87–#108, docs #41–#63.
+Yellow bullets: 23 → 12. Merged: truthdb #87–#109, docs #41–#64.
 
 **Stage 6's Engine actor bullet and Stage 7's planner bullet are both
 CLOSED** (#105 streaming; #106 covering seeks via INCLUDE leaves; #107 row
@@ -156,10 +156,16 @@ lesson its review caught). **Stage 7 is now fully green** (#108 closed the
 exit bullet: locale-ordering index tests that pin the index bytes, plus the
 stale NVARCHAR range-seek exclusion removed — and a tripwire test for the
 sort-key/compare agreement that icu's semver-exempt feature could otherwise
-silently break). The front of the queue is Stage 8's remaining gaps: the
-all-NULL-group aggregate slt (small), then **streaming scans** for
-join/aggregate/sort inputs (the executor's last materialization, coupled to
-the static-type-derivation constraint recorded in the Stage 6 bullet).
+silently break). The front of the queue is Stage 8's last gap:
+**streaming scans** for join/aggregate/sort inputs — the executor's last
+materialization (`build_source` still reads each input whole; the operators
+bound their own working set since #78–#81), coupled to the
+static-type-derivation constraint recorded in the Stage 6 bullet. After
+that, the remaining yellows are Stage 9 (sp_prepare family,
+sp_describe_first_result_set, the exit matrix), Stage 10 (ALTER TABLE ADD
+column — needs a version-tolerant row decode), Stage 11 (SELECT-list/HAVING/
+derived-table correlation; EXEC sp_executesql text path), and Stage 12
+(sharded latches/partitioned lock manager; heartbeats-during-scan test).
 
 The result-streaming legs, all merged:
 
@@ -490,7 +496,7 @@ The big architectural stage — do it before more SQL piles onto the global mute
 - ✅ `INNER/LEFT/RIGHT/FULL/CROSS JOIN`, comma-FROM, `GROUP BY`/`HAVING`, `COUNT/SUM/AVG/MIN/MAX` (+DISTINCT), `SELECT DISTINCT`, ORDER BY ordinals/expressions, ambiguity errors (209); binder scope stack with T-SQL alias-visibility rules. *(done #74: ambiguity emits 209. Joins (all five kinds), comma-FROM, `GROUP BY`/`HAVING`, the five aggregates (+DISTINCT) and `SELECT DISTINCT` are verified working. done #90: **ORDER BY resolution on the plain path** — that path sorts *source* rows against a scope of base columns only, so it saw neither SELECT-list aliases (`SELECT v AS vv FROM a ORDER BY vv` → 207; worst for a computed alias like `SELECT v*2 AS dbl`, which has no base column to fall back on) nor ordinals (`ORDER BY 1` evaluated as a *constant*, so every sort key tied and the rows came back **silently unsorted**). Both now rewrite to the expression they name before sorting, keeping the path's ability to order by an unselected base column; wildcard ordinals expand to *qualified* source references so a join with a repeated column name stays unambiguous. Neither bug was in any gap note — both were found by auditing this plan against the code.)*
 - ✅ Operators: block nested-loop join; hash join on equijoins (RIGHT→LEFT swap, FULL via matched-bits); hash aggregate; **external merge sort and grace-hash partitioning spilling to temp extents** when the per-query memory budget is exceeded (SQL Server tempdb-spill behavior). Int AVG truncates like T-SQL. Join order as written. *(done #71 hash join/agg/DISTINCT; #78 external merge sort; #79 grace-hash aggregate; #80 grace-hash INNER join; #81 grace-hash LEFT/RIGHT/FULL + DISTINCT. Remaining gap: `build_source` still materializes the input for every shape **except** the single-table bare-column SELECT #101 put on a row-at-a-time scan; operators bound their own working set, but a join/aggregate/sort still reads its input whole.)*
 - ✅ Start the hand-rolled **sqllogictest-style runner** (`tests/slt/*.slt`, in-process against `Session::execute_batch`). *(note: drives `Engine::sql_batch`)*
-- 🟡 Exit: NULL-heavy join/agg slt matrices; spill tests (tiny budget forces spill, results identical, temp space reclaimed on restart). *(done #71/#78–#81: A/B force-spill tests for sort, grace-hash aggregate, all four join kinds and DISTINCT assert byte-identical results to the in-memory path and inject NULL keys on both sides; `RowSpool` temp extents reclaim on drop. The NULL-heavy matrices largely shipped in `hash_operators.slt`: NULL keys never equi-match across INNER/LEFT/RIGHT/FULL, NULL keys under a residual ON conjunct, a NULL `GROUP BY` group with HAVING and COUNT(DISTINCT), hash DISTINCT over NULLs single- and multi-column. Gap: **all-NULL-group aggregates are untested** — no group where every value is NULL pinning SUM/MIN/MAX/AVG → NULL and COUNT(col) → 0 while COUNT(*) counts the rows; `aggregate.rs::fold()` looks right but nothing holds it there.)*
+- ✅ Exit: NULL-heavy join/agg slt matrices; spill tests (tiny budget forces spill, results identical, temp space reclaimed on restart). *(done #71/#78–#81: A/B force-spill tests for sort, grace-hash aggregate, all four join kinds and DISTINCT assert byte-identical results to the in-memory path and inject NULL keys on both sides; `RowSpool` temp extents reclaim on drop. The NULL-heavy matrices largely shipped in `hash_operators.slt`: NULL keys never equi-match across INNER/LEFT/RIGHT/FULL, NULL keys under a residual ON conjunct, a NULL `GROUP BY` group with HAVING and COUNT(DISTINCT), hash DISTINCT over NULLs single- and multi-column. done #109: **all-NULL-group aggregates pinned** — `all_null_groups.slt` holds SUM/MIN/MAX/AVG → NULL, COUNT(col) → 0, COUNT(*) → n for a group whose every value is NULL, grouped and ungrouped, through HAVING (`COUNT(col) = 0` selects exactly the all-NULL group; a NULL `SUM` comparison is UNKNOWN and drops it) and COUNT(DISTINCT); an A/B engine test proves the grace-hash spill path answers identically. Verified to fail with `fold()` weakened.)*
 
 ### Stage 9 — TDS 2: TLS (rustls) + RPC/prepared statements (sqlcmd, go-mssqldb default encrypt)
 - ✅ Tunneled TLS handshake inside PRELOGIN packets (drive `rustls::ServerConnection` manually, then switch to a TLS stream) — the riskiest TDS artifact; fixture-test against captured client handshakes. `[tds] encryption = off|optional|required` + cert paths. *(done #91: the encryption mode. It was hardcoded opportunistic — offer TLS iff certs happened to be configured and the client happened to ask — so an operator could not **require** encryption, and nothing stopped a client from silently connecting in plaintext to a TLS-configured server. `off` never encrypts even with a cert configured; `optional` (default) keeps the previous opportunistic behaviour; `required` advertises `ENCRYPT_REQ` and **drops** a client that answers "cannot" rather than falling back to plaintext, which would defeat the setting. `required` without a cert fails at startup. The decision is a pure function tested over the full matrix — notably `off` *with* a cert, which an e2e test cannot reach without committing a key (an e2e `off` test passes vacuously). In place of the planned captured-handshake fixtures, CI exercises the real thing: pytds+pyOpenSSL and go-mssqldb `encrypt=true` handshake against the server every run.)*
