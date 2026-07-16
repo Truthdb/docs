@@ -145,9 +145,14 @@ when actually blocked or asked.
 - `git commit --amend` after a push is blocked by the sandbox. Use a follow-up
   commit.
 
-### Where the work is right now (2026-07-16)
+### Where the work is right now (2026-07-17)
 
-Yellow bullets: 23 → 0. Merged: truthdb #87–#119, docs #41–#73.
+Stages 1–12: every yellow went green (23 → 0; truthdb #87–#119, docs #41–#74).
+**Stage 13 is IN PROGRESS**: #120 shipped the version store + RCSI end-to-end
+(first bullet ✅, second 🟡 — SNAPSHOT isolation itself is being built next,
+then the exit matrix). The stage bullets carry the design-refutation notes;
+the in-memory store replaced the sketched row-carried/temp-extent design on
+audit.
 
 **Stage 6's Engine actor bullet and Stage 7's planner bullet are both
 CLOSED** (#105 streaming; #106 covering seeks via INCLUDE leaves; #107 row
@@ -537,9 +542,9 @@ The big architectural stage — do it before more SQL piles onto the global mute
 - ✅ Exit: 16-thread bank-transfer invariant test with random aborts; guaranteed-deadlock test; bench shows commits/fsync ≫ 1; heartbeats answered during large scans. *(done #119: protocol heartbeats never touch the engine — the dispatcher answers them — so the meaningful half is a native SEARCH answered while a worker is mid-scan holding the batch-long read gate. The test synchronizes on the scan's first Columns event and asserts by draining the reply channel WITHOUT blocking: finding the terminal event already buffered means the search waited out the scan. The first version was vacuous against the unbounded channel — its own teeth-check caught an exclusive-gate regression still passing — and the reviewer measured ~400x timing margin.)*
 
 ### Stage 13 — Version store: RCSI and SNAPSHOT isolation
-- ❌ Row versioning: updated/deleted rows copy their prior version to a version store in temp extents; rows carry a version pointer + txn timestamp; visibility by snapshot LSN; background cleanup once no snapshot needs a version.
-- ❌ `ALTER DATABASE ... SET READ_COMMITTED_SNAPSHOT ON` and `ALLOW_SNAPSHOT_ISOLATION ON` database options; `SET TRANSACTION ISOLATION LEVEL SNAPSHOT`; write-write conflict detection under SNAPSHOT (error 3960).
-- ❌ Exit: readers-don't-block demos under RCSI; snapshot write-conflict tests; version cleanup under load; all five isolation levels covered in the slt/driver matrix.
+- ✅ Row versioning — **done (#120), with the design refuted on audit**: the sketched row-carried version pointer + temp-extent store cannot land in this storage (the positional row codec has no header and rejects trailing bytes — the #115 finding again; deletes are physical, so a version must be reachable without its row), and version state has **no durability requirement at all** (no snapshot survives a restart, so an empty store is correct by construction). Shipped instead: an in-memory version store (`relstore/version.rs`) — per-table chains keyed by row identity (clustered key bytes / heap home RID), newest-first, head = current physical state, older entries carry images; commit-sequence table with snapshots = the **durable commit prefix** (a committed-but-unfsynced writer is invisible, preserving the no-lost-reads property lock release already gives); publication under the same storage-mutex hold as the page mutations; rollback (full and to-savepoint) reverses publications exactly; the maintenance thread prunes below the watermark (oldest live snapshot, else current durable seq) and drops dropped tables' chains.
+- 🟡 `ALTER DATABASE {name|CURRENT} SET READ_COMMITTED_SNAPSHOT / ALLOW_SNAPSHOT_ISOLATION {ON|OFF}` — **done (#120)**, persisted in the superblock reserved area (checkpoints carry it; the ALTER takes Database X and flips memory only after both superblock writes fsync). RCSI is live end-to-end: a READ COMMITTED SELECT captures a per-statement snapshot, takes Database IS only (no Table S — the readers-don't-block mechanism), reads atomically under one storage-lock hold (a no-lock reader cannot use the sliced cursor), and merges the version store on scans AND index seeks (covering included; rows whose entries an invisible writer moved/removed are appended from their chains; the executor's full-WHERE re-check filters over-returns). DML and integrity reads stay lock-based (conservative vs SQL Server, which versions DML's reads too). The adversarial review found four real seam defects — the EXEC-literal isolation collapse (dirty read at SERIALIZABLE, live repro), parked-batch lock sets going stale across an option flip (fixed with a lock-analysis epoch + re-analysis at grant, mutation-verified), a durable-prefix boundary off-by-one, and ALTER's error-path mutation order — all fixed and the repros kept as regression tests. Remaining under this bullet: `SET TRANSACTION ISOLATION LEVEL SNAPSHOT` + txn-scoped snapshots + 3952/3960/3961 (in progress).
+- ❌ Exit: readers-don't-block demos under RCSI (session-level ones landed in #120; the driver-level demo remains); snapshot write-conflict tests; version cleanup under load; all five isolation levels covered in the slt/driver matrix.
 
 ### Stage 14 — SSMS query window + large values + ops hardening
 - ❌ SSMS scope = query window: catalog probes (`SERVERPROPERTY`, `sys.databases`, minimal `sys.configurations`), `USE truthdb` ENVCHANGE, accurate per-statement DONE_COUNT, `SET NOCOUNT`; JDBC smoke in CI; manual SSMS checklist file.
