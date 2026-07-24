@@ -37,8 +37,16 @@ detailed plan document before work on it starts.
 
 - ❌ `CREATE FULLTEXT INDEX` and `CONTAINS()` over relational tables; retire
   the legacy standalone search surface.
-- ❌ Vector similarity search for AI/RAG workloads, under the same catalog and
-  log.
+
+### The vector engine
+
+- ❌ Collections of embeddings with approximate-nearest-neighbor indexes,
+  quantization, and filtered search; specialized storage layout owned by the
+  engine.
+- ❌ Integration with relational rows (embeddings beside the data they
+  describe, same transactions and backups) surfaced through SQL and the
+  search DSL; possibly a dedicated wire protocol for high-throughput ingest
+  and query.
 
 ### Multiple databases (namespaces)
 

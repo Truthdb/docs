@@ -17,8 +17,8 @@ has its own storage, its own replication, its own backup story, and its own
 idea of what happened when.
 
 TruthDB is one system that does those jobs: a relational database compatible
-with SQL Server's wire protocol and SQL dialect, a full-text and vector
-search engine, an event streaming platform, a double-entry ledger, and
+with SQL Server's wire protocol and SQL dialect, a full-text search engine, a
+vector database, an event streaming platform, a double-entry ledger, and
 domain-specific features built on top of them (time-dependent views for
 pension administration being the first).
 
@@ -59,14 +59,14 @@ area:
 TruthDB is a shared log with independent engines above it:
 
 ```
-┌────────────┬──────────┬───────────┬──────────┬────────────────┐
-│ Relational │  Search  │  Streams  │  Ledger  │   Verticals    │
-│ (SQL/TDS)  │          │           │          │ (temporal, …)  │
-├────────────┴──────────┴───────────┴──────────┴────────────────┤
-│                       THE SHARED LOG                          │
-│   one write-ahead log · one data file · commit protocol       │
-│   crash recovery · checkpoints · backup · replication         │
-└───────────────────────────────────────────────────────────────┘
+┌────────────┬────────┬────────┬─────────┬────────┬──────────────┐
+│ Relational │ Search │ Vector │ Streams │ Ledger │  Verticals   │
+│ (SQL/TDS)  │        │        │         │        │ (temporal,…) │
+├────────────┴────────┴────────┴─────────┴────────┴──────────────┤
+│                         THE SHARED LOG                         │
+│    one write-ahead log · one data file · commit protocol       │
+│    crash recovery · checkpoints · backup · replication         │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 **The shared log layer** owns the write-ahead log itself, the single data file
@@ -104,12 +104,22 @@ runs today and is the front door for most workloads.
 **The search engine** provides full-text search, today with an
 Elasticsearch-style query DSL running as a second engine over the shared log.
 It will converge with the relational surface — `CREATE FULLTEXT INDEX` and
-`CONTAINS()` over ordinary tables — and grow **vector similarity search** for
-AI and RAG workloads. Embeddings live beside the rows they describe, under
-the same log, transactions, and backups: no separate vector database, no
-synchronization pipeline, no index that can drift from its source data.
-Search and vector indexes are derived state, rebuildable from the log like
-everything else.
+`CONTAINS()` over ordinary tables. Search indexes are derived state,
+rebuildable from the log like everything else.
+
+**The vector engine** is a vector database in the Qdrant mold, for AI and RAG
+workloads: collections of embeddings served by approximate-nearest-neighbor
+search. Vector search rewards specialization, and the engine owns its
+specialized machinery outright — ANN graph indexes, quantization to keep
+working sets in memory, SIMD-friendly layouts for distance computation,
+filter-aware traversal, and potentially its own wire protocol for
+high-throughput ingest. The architecture costs it nothing: dedicated vector
+databases are themselves built as a write-ahead log plus derived index
+segments, and TruthDB's shared log is that log, generalized. What the shared
+log adds is what standalone vector databases cannot offer: embeddings live
+beside the rows they describe, under the same transactions and backups — no
+separate vector database to run, no synchronization pipeline, no index that
+silently drifts from its source data.
 
 **The streams engine** turns the log into a product surface: topics and
 durable subscriptions are filtered views over the shared log, so
