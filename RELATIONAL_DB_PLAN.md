@@ -607,7 +607,80 @@ The big architectural stage — do it before more SQL piles onto the global mute
 - **18.7** ✅ Exit: two-process CI harness — standby kill/reconnect resumes from `last_received_lsn`; primary kill → promote → slt verification; sync-commit fault injection (delayed acks block commits, then timeout demotion); slot invalidation under ring pressure; epoch-fencing rejoin refusal; lag-metric assertions. *(done truthdb#170: `tests/repl_harness.rs` spawns TWO real server binaries wired through their configs (a `TRUTHDB_CONFIG` env override isolates instances) and asserts over real sockets, in ~5s: online `BACKUP DATABASE` seeds the standby (`restore --standby`), live follow + committed-state reads; DMV connectedness + lag; standby kill -9 → primary keeps committing → restart resumes from the persisted watermark; primary kill -9 → offline promote (epoch 0→1) → the promoted node serves exactly the committed history and accepts writes; sync-commit armed with no standby → first commit waits out the timeout, demotes to NOT_SYNCHRONIZED, later commits fast; a pre-failover seed is refused with the 'reseed' message and never connects; a fresh new-timeline seed attaches, re-SYNCHRONIZES the link (DMV), a sync commit completes promptly, and the standby follows. Slot invalidation under ring pressure stays pinned by the in-process retention-cap test (filling a real 256 MiB+ ring in CI buys nothing — the reap path is identical).)*
 
 ### Stage 19 — Future outline (not planned in detail)
-- **19.1** ❌ Multiple databases/schemas, cursors, INSTEAD OF triggers, GOTO, savepoints (`SAVE TRAN`), cost-based optimizer + histogram statistics, recursive CTEs, updatable views, FK CASCADE, MARS (recommend: never), BULK INSERT, columnstore, column-level grants / `WITH GRANT OPTION` / `EXECUTE AS`, DIFFERENTIAL/striped/encrypted backups, auto-failover + client routing + logical replication, and **full-text convergence**: reimplement the ES DSL as `CREATE FULLTEXT INDEX` + `CONTAINS()` over relational tables, then retire the legacy in-memory `IndexState`.
+- **19.1** ❌ ~~Multiple databases~~ *(naming level SHIPPED — Stage 20; per-database schemas beyond `dbo` still future)*, cursors, INSTEAD OF triggers, GOTO, savepoints (`SAVE TRAN`), cost-based optimizer + histogram statistics, recursive CTEs, updatable views, FK CASCADE, MARS (recommend: never), BULK INSERT, columnstore, column-level grants / `WITH GRANT OPTION` / `EXECUTE AS`, DIFFERENTIAL/striped/encrypted backups, auto-failover + client routing + logical replication, and **full-text convergence**: reimplement the ES DSL as `CREATE FULLTEXT INDEX` + `CONTAINS()` over relational tables, then retire the legacy in-memory `IndexState`.
+
+
+### Stage 20 — Multiple databases (naming namespaces)
+
+Level 1 of VISION.md's database ladder, built and merged (truthdb #171,
+#172, #173). Databases are naming, security, and organizational containers
+over the one shared log and data file — deliberately nothing more: restore,
+replication, and failover stay instance-granular; the past is queryable
+(temporal `AS OF`, future), not restorable.
+
+**Design.** A database is a catalog row (`DatabaseDef` payload on the shared
+catalog b-tree, partitioned out of the object namespace like principals).
+The default database (id 1) is synthesized, never stored, named by
+`[tds] database` — no bootstrap write, nothing for standbys to do. Objects
+carry `database_id` (serde default 1: old catalogs load into the default
+database); object names are unique per database; the table cache and every
+name-keyed storage/exec API carry the database dimension.
+
+- **20.1** ✅ Catalog layer (truthdb #171): database rows + tombstones,
+  id allocation (max+1, capped `u16::MAX`), `(db, name)` re-keying of the
+  whole storage and exec stack, `TxnContext`/`EvalContext.database_id`
+  (defaults land in database 1, a compile-time assertion welds the two
+  crates' constants), `rel_create_database`/`rel_drop_database` (drops every
+  contained object in one statement transaction with DROP TABLE's version
+  fences). Review round (5 distinct findings): FK children-of-parent had to
+  be db-filtered in BOTH derivations (execution + the 3726 guard, matching
+  lock analysis), sys.* views scoped per database, the default name given
+  one owner (config → `set_default_database_name`, collision-checked against
+  stored rows), `Engine::analyze_locks` takes the session's database.
+- **20.2** ✅ SQL surface (truthdb #172): `CREATE DATABASE` / `DROP DATABASE
+  [IF EXISTS]` (1801/3701/3702/3708, 226 in-txn, privileged DDL, Database X);
+  real `USE` (catalog-validated 911, canonical-casing ENVCHANGE);
+  three-part `db.dbo.t` resolution incl. cross-database DML (one shared
+  log — no extra machinery); `DB_ID()`/`DB_ID(name)`/`DB_NAME(id)` via a
+  per-batch snapshot riding the security refresh; real `sys.databases` rows
+  (option columns instance-wide by design); TDS login validation (4060,
+  canonical name, empty→config default); the native path runs in the default
+  database (CLI `USE`/`DB_NAME()` work); CREATE refuses db prefixes (166)
+  and unknown schemas (2760). Review round (23 findings, 11 distinct — the
+  densest yet): **USE is refused in stored bodies (154) and scoped to the
+  dynamic batch in `sp_executesql`**, with the lock-analysis union recursing
+  into literal dynamic SQL (the 2PL hole: a hidden USE executed
+  cross-database DML with an empty lock set); **stored bodies (procedures,
+  views, functions) resolve and are lock-analyzed in their HOME database**;
+  **DROP DATABASE tombstones the row — a dropped id is never reallocated**
+  (a stale session silently rebound into the next-created database), and a
+  session in a dropped database errors loudly on everything but USE;
+  `exec_use` reads the catalog once (a concurrent drop panicked the worker
+  between two reads); three-part DROP TABLE drops the NAMED database's
+  table; reserved names `sys`/`dbo`/`master`/`model`/`msdb`/`tempdb` (a
+  database named `sys` defeated every sys.-prefix dispatch);
+  `[dbo].[my.table]` stays one name; an unknown-database login no longer
+  kills the engine worker (early return sat in the worker loop).
+- **20.3** ✅ WAL container tag (truthdb #173) — VISION.md's required
+  groundwork: forward page-scoped REL records (PAGE_OP, PAGE_IMAGE(S)) carry
+  the mutating database's id in the envelope's spare `flags` field. Zero
+  layout change, no version bump: old logs read tag 0, standbys/backups ship
+  identical bytes. Stamped at `RelCtx::append` from a per-statement
+  container set by every attributed storage entry point. Review round: **CLRs
+  are never tagged** (a cross-database rollback's CLRs inherited a stale
+  per-file latch — reproduced by the reviewer; tag-0-is-unfiltered is the
+  consumer rule that keeps filtered copies convergent through compensation),
+  principal drops restore container 0 after per-object grant scrubs, the
+  first catalog bootstrap stays global.
+
+**Deliberate deviations (naming-level scope).** Users/roles/logins stay
+server-wide (object permissions became per-database for free — they ride
+object rows). Database options (RCSI, snapshot, recovery model) are
+instance-wide; every `sys.databases` row reports the shared values.
+`BACKUP DATABASE <name>` validates the name but backs up the instance.
+Dropping a database out from under another session degrades loudly (its
+next statement errors) rather than killing connections. Known limitation:
+`db..t` fails in the parser (the resolver supports the form).
 
 ## Search-engine coexistence (every stage)
 
