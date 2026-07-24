@@ -2,15 +2,13 @@
 
 Last updated: 2026-07-24
 
-Status of the vision described in [VISION.md](VISION.md), and the shape of
-what comes next. Legend: ✅ built and tested · 🟡 partially done · ❌ not
-started. Items below the "Ahead" line are in no committed order; each will get
-its own detailed plan document before work starts, with the rigor of
-[RELATIONAL_DB_PLAN.md](RELATIONAL_DB_PLAN.md).
+What is built and what comes next. Legend: ✅ built and tested · ❌ not
+started. Items under "Ahead" are in no committed order; each area gets its own
+detailed plan document before work on it starts.
 
 ## Built
 
-### The substrate
+### The shared log
 
 - ✅ Single-file storage on io_uring with an internal space allocator.
 - ✅ Write-ahead log with group commit; the log is the source of truth, all
@@ -24,31 +22,14 @@ its own detailed plan document before work starts, with the rigor of
 - ✅ Replication monitoring: `sys.dm_repl_slots`, `sys.dm_repl_replica_states`,
   and a CLI status command.
 
-### The relational engine
+### The engines
 
-Detailed history and remaining items: [RELATIONAL_DB_PLAN.md](RELATIONAL_DB_PLAN.md).
-
-- ✅ T-SQL surface: DDL, DML, joins, aggregates, subqueries, views,
-  procedures, functions, triggers, with SQL Server-compatible error numbers.
-- ✅ TDS wire protocol: SSMS query windows, JDBC, and other standard SQL
-  Server clients work unmodified.
-- ✅ Transactions: ACID with locking, deadlock detection, and row-versioned
-  isolation (READ COMMITTED SNAPSHOT and SNAPSHOT) backed by a version store.
-- ✅ Constraints with faithful error semantics (primary/unique keys, foreign
-  keys, checks, defaults).
-- ✅ Security: catalog-backed logins and users with hashed passwords,
-  permissions.
-- 🟡 A manual validation pass in SSMS (scripted checklist exists; needs a
-  human at the GUI).
-- 🟡 Long-tail SQL features, outlined but not planned in detail: cursors,
-  savepoints, recursive CTEs, updatable views, cascading foreign keys,
-  BULK INSERT, a cost-based optimizer with statistics.
-
-### The search engine
-
-- ✅ Full-text search with an Elasticsearch-style query DSL, running as a
-  second engine over the shared log — the working proof of the
-  parallel-engines architecture.
+- ✅ The relational engine: SQL Server-compatible SQL dialect and TDS wire
+  protocol (SSMS and JDBC clients work unmodified), ACID transactions with
+  row-versioned isolation, constraints, security.
+- ✅ The search engine: full-text search with an Elasticsearch-style query
+  DSL, running as a second engine over the shared log — the working proof of
+  the parallel-engines architecture.
 
 ## Ahead
 
@@ -64,9 +45,8 @@ Detailed history and remaining items: [RELATIONAL_DB_PLAN.md](RELATIONAL_DB_PLAN
 - ❌ `CREATE DATABASE` / `DROP DATABASE`, `USE`, `db.schema.object`
   resolution, per-database options and permissions, real rows in
   `sys.databases`.
-- ❌ Container/engine tag on log records — required groundwork for filtered
-  subscriptions and per-namespace retention (see the requirements in
-  [VISION.md](VISION.md)).
+- ❌ Container/engine tag on log records — groundwork for filtered
+  subscriptions and per-namespace retention.
 
 ### The streams engine
 

@@ -4,8 +4,7 @@ Last updated: 2026-07-24
 
 This document is the story of TruthDB: what it is, the architecture that makes
 it possible, and the decisions it is committed to. It assumes no prior
-knowledge of the project. Current status and the order of upcoming work live in
-[ROADMAP.md](ROADMAP.md); everything else in this repository is detail under
+knowledge of the project. Everything else in this repository is detail under
 this document.
 
 ## What TruthDB is
@@ -55,26 +54,26 @@ area:
   employment history, fund prices, and regulation tables as of a past date
   gets an exactly consistent answer, not an approximately consistent one.
 
-## The architecture: a small substrate, parallel engines
+## The architecture: a shared log, parallel engines
 
-TruthDB is a small, hardened storage substrate with independent engines above
-it:
+TruthDB is a shared log with independent engines above it:
 
 ```
 ┌────────────┬──────────┬───────────┬──────────┬────────────────┐
 │ Relational │  Search  │  Streams  │  Ledger  │   Verticals    │
 │ (SQL/TDS)  │          │           │          │ (temporal, …)  │
 ├────────────┴──────────┴───────────┴──────────┴────────────────┤
-│                        THE SUBSTRATE                          │
-│   one data file · one write-ahead log · commit protocol       │
+│                       THE SHARED LOG                          │
+│   one write-ahead log · one data file · commit protocol       │
 │   crash recovery · checkpoints · backup · replication         │
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**The substrate** owns the single data file and its space allocator, the
-write-ahead log, the transaction commit protocol, crash recovery, checkpoints,
-backup, and replication. It is deliberately small, and it is where all of the
-system's durability and correctness machinery is concentrated.
+**The shared log layer** owns the write-ahead log itself, the single data file
+and its space allocator, the transaction commit protocol, crash recovery,
+checkpoints, backup, and replication. It is deliberately small, and it is
+where all of the system's durability and correctness machinery is
+concentrated.
 
 **The engines** are parallel and independent. Each has its own data model, its
 own query surface, and potentially its own wire protocol: the relational
@@ -88,33 +87,34 @@ This pattern — several independent state machines running over one shared,
 replicated log — is established in the systems literature (Meta's Delos, the
 Tango paper) and is a cousin of FoundationDB's layer architecture. Its payoff
 is that **every engine inherits durability, crash recovery, backup, and
-replication from the substrate for free.** A new engine defines its log record
-types and how to replay them; the substrate does everything else. Replication
-in particular ships raw log bytes, so it replicates every engine — current and
-future — without engine-specific code.
+replication from the shared log for free.** A new engine defines its log
+record types and how to replay them; the shared log layer does everything
+else. Replication in particular ships raw log bytes, so it replicates every
+engine — current and future — without engine-specific code.
 
-## The substrate contract
+## The shared log contract
 
-The boundary between substrate and engines is precise, because getting it
-wrong is how storage systems break. The recurring failure mode in this class
-of system is an invariant that is computed independently in two places — two
-components each deciding "what is committed," or "what may be deleted from the
-log" — which eventually disagree. The substrate exists to compute the
-dangerous invariants exactly once. Four things are shared, and only these:
+The boundary between the shared log and the engines is precise, because
+getting it wrong is how storage systems break. The recurring failure mode in
+this class of system is an invariant that is computed independently in two
+places — two components each deciding "what is committed," or "what may be
+deleted from the log" — which eventually disagree. The shared log layer
+exists to compute the dangerous invariants exactly once. Four things are
+shared, and only these:
 
 1. **The log and the data file.** One write-ahead log, one data file, one
    allocator, one log-sequence-number space. Every durable byte of every
    engine lives here.
-2. **The commit protocol.** Transaction begin, commit, and rollback are
-   substrate-level, even for engines that mostly use single-event
+2. **The commit protocol.** Transaction begin, commit, and rollback belong to
+   the shared log layer, even for engines that mostly use single-event
    transactions. Because there is one log, a commit record spanning engines is
    trivial — atomicity between a table update and a ledger transfer comes at
    near-zero cost, rather than being impossible to retrofit across per-engine
    commit systems.
 3. **Log truncation and checkpoint floors.** Each engine reports the oldest
-   log position it still needs; the substrate computes the minimum and owns
-   log truncation and checkpointing. No engine keeps private durable state
-   that the checkpoint system cannot see.
+   log position it still needs; the shared log layer computes the minimum and
+   owns log truncation and checkpointing. No engine keeps private durable
+   state that the checkpoint system cannot see.
 4. **Naming and enumeration.** One catalog records that every object exists —
    tables, indexes, topics, ledgers — even though it knows nothing about their
    internals. Backup manifests, monitoring, security grants, and
@@ -172,7 +172,7 @@ Rejected permanently:
 - Per-database or per-engine logs. One write-ahead log, one LSN space.
 - Per-database restore and per-database failover. Restore, replication, and
   failover are instance-granular.
-- Engine-private durable state invisible to the substrate's checkpoint and
+- Engine-private durable state invisible to the shared log's checkpoint and
   truncation machinery.
 - Forced unification of query surfaces. Engines are parallel; integrations
   are chosen per pair.
@@ -187,9 +187,9 @@ Required of future work:
   segments are the warm tier serving stream retention and deep temporal
   history, governed by per-namespace retention policies over one physical log.
 - **Isolation is resource governance, not storage separation.** Engines and
-  tenants sharing one substrate contend for log bandwidth, memory, and I/O;
-  the answer is admission control and scheduling, never splitting the
-  storage.
+  tenants sharing one log and one data file contend for log bandwidth,
+  memory, and I/O; the answer is admission control and scheduling, never
+  splitting the storage.
 - **If scale-out beyond one machine ever comes, the sharding axis is
   partition-shaped (by key), not database-shaped.** Databases are namespaces,
   not units of placement.
