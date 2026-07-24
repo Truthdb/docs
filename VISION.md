@@ -17,10 +17,10 @@ has its own storage, its own replication, its own backup story, and its own
 idea of what happened when.
 
 TruthDB is one system that does those jobs: a relational database compatible
-with SQL Server's wire protocol and SQL dialect, a full-text search engine, an
-event streaming platform, a double-entry ledger, and domain-specific features
-built on top of them (time-dependent views for pension administration being
-the first).
+with SQL Server's wire protocol and SQL dialect, a full-text and vector
+search engine, an event streaming platform, a double-entry ledger, and
+domain-specific features built on top of them (time-dependent views for
+pension administration being the first).
 
 The point is not that one box is cheaper than five, although it is. The point
 is a property that a fleet of separate systems cannot have at any price: **a
@@ -91,6 +91,48 @@ replication from the shared log for free.** A new engine defines its log
 record types and how to replay them; the shared log layer does everything
 else. Replication in particular ships raw log bytes, so it replicates every
 engine — current and future — without engine-specific code.
+
+## The engines
+
+**The relational engine** is a SQL Server-compatible database: the T-SQL
+dialect, the TDS wire protocol, and faithful error semantics, so that SSMS,
+JDBC, and existing SQL Server tooling and code work unmodified. It provides
+ACID transactions with row-versioned isolation (READ COMMITTED SNAPSHOT and
+SNAPSHOT), constraints, views, procedures, and catalog-backed security. It
+runs today and is the front door for most workloads.
+
+**The search engine** provides full-text search, today with an
+Elasticsearch-style query DSL running as a second engine over the shared log.
+It will converge with the relational surface — `CREATE FULLTEXT INDEX` and
+`CONTAINS()` over ordinary tables — and grow **vector similarity search** for
+AI and RAG workloads. Embeddings live beside the rows they describe, under
+the same log, transactions, and backups: no separate vector database, no
+synchronization pipeline, no index that can drift from its source data.
+Search and vector indexes are derived state, rebuildable from the log like
+everything else.
+
+**The streams engine** turns the log into a product surface: topics and
+durable subscriptions are filtered views over the shared log, so
+change-data-capture from relational tables comes free — every table change is
+already a log record. It will speak the Kafka wire protocol so existing
+producers and consumers connect unmodified, with tiered retention (the
+in-place log as hot tier, archived segments as warm tier) governed by
+per-namespace policies. Unlike Kafka, ordering is total across all topics and
+tables, not per-partition.
+
+**The ledger engine** provides double-entry accounting in the TigerBeetle
+mold: accounts and transfers with fixed, purpose-built schemas, chains of
+linked transfers committing atomically, and domain rules (no mixing across
+ledgers) enforced by the engine itself. Because it shares the log and the
+commit protocol with everything else, a ledger transfer can commit atomically
+with the SQL update and the stream event that describe it — the integration
+no standalone ledger can offer.
+
+**The verticals** are domain products composed from the engines. The first is
+pension administration: bitemporal views that answer "what did we know on
+date X about rights valid on date Y," `AS OF` audit queries with exact
+consistency, and deep history served from tiered log retention. Verticals are
+the proof of composition — they add domain semantics, not new storage.
 
 ## The shared log contract
 
