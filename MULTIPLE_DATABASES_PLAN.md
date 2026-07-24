@@ -68,6 +68,29 @@ keys refused (1763). `sys.databases` returns real rows;
 argument-sensitive. Permission-denied (229) and constraint messages stop
 hardcoding `truthdb`.
 
+## Decisions added during implementation (review-driven)
+
+- **Dropped database ids are tombstoned, never reused.** `DROP DATABASE`
+  rewrites the catalog row as a tombstone (`DatabaseDef::dropped`) rather
+  than deleting it: the id is retired forever, the name freed. WAL-native,
+  so it replicates and survives crashes. Without this, a stale session's
+  cached id silently rebound into the next-created database.
+- **A session in a dropped database fails loudly.** Every statement except
+  `USE` (the way out) errors with 911, checked per statement against the
+  per-batch databases snapshot.
+- **`USE` is refused in stored bodies (SQL Server 154)** and scoped to the
+  dynamic batch inside `sp_executesql` — the caller's context returns at
+  scope exit. The lock-analysis union recurses into literal dynamic SQL so
+  a hidden `USE` still contributes its database's locks.
+- **Stored bodies resolve in their home database** — procedures, views,
+  and functions resolve (and are lock-analyzed in) the database they live
+  in, not the caller's, matching SQL Server.
+- **Reserved database names**: `sys`, `dbo`, `master`, `model`, `msdb`,
+  `tempdb` — `sys` would defeat the catalog-view dispatch and the lock
+  analysis' `sys.` skip; `dbo` would make three-part names ambiguous.
+- **Known limitation**: `db..t` (empty schema part) fails in the parser;
+  the resolver supports the form if the parser ever produces it.
+
 ## Deliberate deviations (naming-level scope)
 
 - **Users, roles, and logins stay server-wide.** Object permissions become
