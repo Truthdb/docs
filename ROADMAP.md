@@ -27,6 +27,11 @@ detailed plan document before work on it starts.
 - ✅ The relational engine: SQL Server-compatible SQL dialect and TDS wire
   protocol (SSMS and JDBC clients work unmodified), ACID transactions with
   row-versioned isolation, constraints, security.
+- ✅ Multiple databases as naming namespaces: `CREATE`/`DROP DATABASE`,
+  `USE`, three-part `db.dbo.object` resolution and cross-database queries,
+  real `sys.databases` rows, `DB_ID`/`DB_NAME` — plus the container tag on
+  page-scoped log records, the groundwork for filtered subscriptions and
+  per-namespace retention.
 - ✅ The search engine: full-text search with an Elasticsearch-style query
   DSL, running as a second engine over the shared log — the working proof of
   the parallel-engines architecture.
@@ -48,13 +53,6 @@ detailed plan document before work on it starts.
   search DSL; possibly a dedicated wire protocol for high-throughput ingest
   and query.
 
-### Multiple databases (namespaces)
-
-- ❌ `CREATE DATABASE` / `DROP DATABASE`, `USE`, `db.schema.object`
-  resolution, per-database options and permissions, real rows in
-  `sys.databases`.
-- ❌ Container/engine tag on log records — groundwork for filtered
-  subscriptions and per-namespace retention.
 
 ### The streams engine
 
