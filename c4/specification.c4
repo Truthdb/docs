@@ -1,0 +1,85 @@
+// Element kinds, tags and deployment node kinds shared by every file in this folder.
+
+specification {
+  element person {
+    style {
+      shape person
+      color green
+    }
+  }
+  element system {
+    style {
+      color primary
+    }
+  }
+  element externalSystem {
+    notation 'External system'
+    style {
+      color muted
+    }
+  }
+  element container {
+    style {
+      color secondary
+    }
+  }
+  element component {
+    style {
+      color sky
+    }
+  }
+  element datastore {
+    notation 'Data store'
+    style {
+      shape storage
+      color amber
+    }
+  }
+  element artifact {
+    notation 'Build artifact'
+    style {
+      shape rectangle
+      color indigo
+      border dashed
+    }
+  }
+  element pipeline {
+    notation 'CI/CD workflow'
+    style {
+      shape queue
+      color slate
+    }
+  }
+
+  // Which GitHub repository (Truthdb/<name>) an element lives in.
+  tag repo_truthdb
+  tag repo_orchestrator
+  tag repo_installer
+  tag repo_installer_iso
+  tag repo_installer_kernel
+  tag repo_installer_kernel_builder_image
+  tag repo_apt
+  tag repo_website
+  tag repo_assets
+  tag repo_docs
+  tag repo_github
+
+  tag optional {
+    color #9ca3af
+  }
+
+  deploymentNode environment {
+    style {
+      color gray
+    }
+  }
+  deploymentNode machine {
+    notation 'Physical or virtual machine'
+  }
+  deploymentNode dockerContainer {
+    notation 'Docker container'
+  }
+  deploymentNode cloud {
+    notation 'Hosted service'
+  }
+}
