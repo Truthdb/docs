@@ -1,0 +1,235 @@
+// How TruthDB is built, released and distributed (GitHub Actions workflows,
+// release artifacts, the apt repository), and the developer tooling that
+// drives it (the orchestrator CLI and the local build scripts).
+
+model {
+
+  delivery = system 'Build and release' {
+    description 'GitHub Actions workflows across the Truthdb repos, the artifacts they publish to GitHub Releases and GHCR, and the signed apt repository.'
+
+    // truthdb
+    truthdbCi = pipeline 'truthdb ci.yml' {
+      #repo_truthdb
+      technology 'GitHub Actions, rust:1.92-bookworm'
+      description 'On push/PR to main: fmt, clippy, cargo test --workspace (seccomp unconfined for io_uring), release build, and a TDS conformance job (pytds, go-mssqldb, mssql-jdbc, ODBC sqlcmd, go-sqlcmd against a TLS server on 1433).'
+    }
+    truthdbRelease = pipeline 'truthdb release.yml' {
+      #repo_truthdb
+      technology 'GitHub Actions, tag v*'
+      description 'Creates the GitHub Release and uploads the server tarball.'
+    }
+    truthdbDeb = pipeline 'truthdb deb.yml' {
+      #repo_truthdb
+      technology 'GitHub Actions, ubuntu:22.04, cargo-deb, tag v*'
+      description 'Builds truthdb-server and truthdb-cli .debs (glibc 2.35), runs lintian, smoke-tests install and purge on debian:12, debian:13, ubuntu:22.04, ubuntu:24.04, uploads them, then dispatches new-debs to Truthdb/apt.'
+    }
+    truthdbTarball = artifact 'truthdb-v<ver>-x86_64-linux-gnu.tar.gz' {
+      #repo_truthdb
+      technology 'GitHub Release asset + .sha256'
+      description 'The truthdb binary and packaging/truthdb.service.'
+    }
+    debs = artifact 'truthdb-server / truthdb-cli .deb' {
+      #repo_truthdb
+      technology 'GitHub Release assets'
+      description 'truthdb-server: /usr/bin/truthdb, systemd unit, conffile /etc/truthdb/truthdb.toml, maintainer scripts that create the truthdb user. truthdb-cli: /usr/bin/truthdb-cli.'
+    }
+
+    // apt
+    aptPublish = pipeline 'apt publish.yml' {
+      #repo_apt
+      technology 'GitHub Actions, reprepro, GPG'
+      description 'On repository_dispatch new-debs (or manual): downloads the .debs from the truthdb release, reprepro includedeb into all suites, signs, commits dists/, pool/, db/ as apt-publish-bot.'
+    }
+    aptRepo = datastore 'apt repository' {
+      #repo_apt
+      technology 'reprepro, GitHub Pages'
+      description 'https://truthdb.github.io/apt/. Suites bookworm, trixie, jammy, noble (Suite: stable), component main, amd64. Signed with RSA4096 key 2F66196F410C15A9D1127309EBF9AA44EB5302E2 (pubkey.asc).'
+    }
+
+    // installer chain
+    builderImageRelease = pipeline 'installer-kernel-builder-image release.yml' {
+      #repo_installer_kernel_builder_image
+      technology 'GitHub Actions, docker buildx, tag v*'
+      description 'Builds the ubuntu:24.04 kernel toolchain image for amd64 and arm64.'
+    }
+    builderImage = artifact 'truthdb-installer-kernel-builder-image' {
+      #repo_installer_kernel_builder_image
+      technology 'OCI image on GHCR'
+      description 'ghcr.io/truthdb/truthdb-installer-kernel-builder-image, tags :latest, :<sha>, :<tag>, :<version>.'
+    }
+    kernelRelease = pipeline 'installer-kernel release.yml' {
+      #repo_installer_kernel
+      technology 'GitHub Actions, tag v*'
+      description 'Runs in the builder image: downloads Linux 6.12, applies truthdb-installer-kernel.config, make olddefconfig, builds bzImage.'
+    }
+    kernelEfi = artifact 'BOOTX64.EFI' {
+      #repo_installer_kernel
+      technology 'GitHub Release asset + .sha256'
+      description 'The installer kernel bzImage.'
+    }
+    installerRelease = pipeline 'installer release.yml' {
+      #repo_installer
+      technology 'GitHub Actions, rust:1.92-bookworm, tag v*'
+      description 'Builds the installer for x86_64-unknown-linux-musl (crt-static, size-optimised).'
+    }
+    installerTarball = artifact 'truthdb-installer-v<ver>-x86_64-linux-musl.tar.gz' {
+      #repo_installer
+      technology 'GitHub Release asset + .sha256'
+    }
+    isoBuild = container 'ISO build scripts' {
+      #repo_installer_iso
+      technology 'bash, ubuntu:24.04 container'
+      description 'build_and_run.sh drives build_rootfs_payload.sh (debootstrap + truthdb) and build_iso.sh (initramfs + grub-mkrescue). INPUT_MODE=dev builds installer and truthdb from sibling checkouts; INPUT_MODE=release downloads the latest releases. The kernel always comes from the latest installer-kernel release unless KERNEL_SRC is set.'
+    }
+    isoRelease = pipeline 'installer-iso release.yml' {
+      #repo_installer_iso
+      technology 'GitHub Actions, tag v*'
+      description 'Builds the payload with TRUTHDB_SOURCE=release, downloads the latest installer and kernel releases (sha256 checked), runs build_iso.sh. Takes "latest", not the matching tag.'
+    }
+    iso = artifact 'truthdb-installer-v<ver>.iso' {
+      #repo_installer_iso
+      technology 'GitHub Release asset + .iso.sha256'
+      description 'GRUB, the installer kernel and the zstd initrd (busybox, /init, truthdb-installer, disk tools, root filesystem payload).'
+    }
+
+    // tooling and website releases
+    orchestratorRelease = pipeline 'orchestrator release.yml' {
+      #repo_orchestrator
+      technology 'GitHub Actions, tag v*'
+      description 'Publishes orchestrator-v<ver>-x86_64-linux-gnu.tar.gz and .sha256.'
+    }
+    websiteRelease = pipeline 'website release.yml / firebase-preview.yml' {
+      #repo_website
+      technology 'GitHub Actions, Node 20'
+      description 'PR: builds with the launch gate off and deploys a Firebase preview channel. Tag v*: GitHub Release with the dist tarball, then deploys to the Firebase live channel.'
+    }
+  }
+
+  tooling = system 'Developer tooling' {
+    description 'What a maintainer runs locally in the multi-repo workspace.'
+
+    orchestrator = container 'orchestrator' {
+      #repo_orchestrator
+      technology 'Rust, clap, ratatui, reqwest'
+      description 'Admin CLI. Subcommands: workspace-update, release-iso, monitor. TUI by default (--no-tui for plain output). Token from GITHUB_TRUTHDB_TOKEN (set by .envrc from gh auth token).'
+
+      cliMain = component 'CLI entry' {
+        technology 'main.rs, clap'
+        description 'Parses subcommands. In TUI mode runs the command on a worker thread and sends events over a crossbeam channel.'
+      }
+      tui = component 'TUI' {
+        technology 'tui.rs, ratatui, crossterm'
+        description 'Step and status view, and the monitor table.'
+      }
+      reporter = component 'Reporter' {
+        technology 'reporter.rs'
+        description 'PlainReporter (stderr) or ChannelReporter (feeds the TUI).'
+      }
+      workspaceUpdate = component 'workspace-update' {
+        technology 'workspace_update.rs, include_dir'
+        description 'Clones missing repos listed in workspace/repos.toml over SSH, mirrors workspace/ files (CLAUDE.md, oc.sh, .vscode/settings.json) into the workspace root, installs .bin/orchestrator.'
+      }
+      releaseIso = component 'release-iso' {
+        technology 'release_iso.rs'
+        description 'Preflight (clean, synced, tag absent) for installer-kernel, installer, truthdb, installer-iso; then, strictly in that order, creates and pushes annotated tag v<semver> and waits until the repo\'s release assets exist and are stable (45 min timeout each). Supports --dry-run and --resume.'
+      }
+      monitor = component 'monitor' {
+        technology 'monitor.rs'
+        description 'Read-only dashboard for 9 repos: latest ci.yml run on the default branch, latest release tag, commits ahead of that tag.'
+      }
+      gitClient = component 'git wrapper' {
+        technology 'git.rs, git CLI'
+        description 'clone, fetch, branch and worktree checks, tag lookup, git tag -a, git push origin <tag>.'
+      }
+      githubClient = component 'GitHub client' {
+        technology 'github.rs, reqwest'
+        description 'releases/tags, releases/latest, repo default branch, Actions runs, compare; wait_for_release_assets.'
+      }
+    }
+
+    workspaceTemplate = datastore 'Workspace template' {
+      #repo_orchestrator
+      technology 'orchestrator/workspace/'
+      description 'repos.toml, CLAUDE.md, oc.sh, .vscode/settings.json. Embedded into the orchestrator binary at build time.'
+    }
+    localWorkspace = datastore 'Local workspace' {
+      technology 'git checkouts'
+      description 'One directory per Truthdb repo, plus the synced CLAUDE.md, oc.sh and .bin/orchestrator.'
+    }
+
+    dockerScripts = container 'Docker REPL and bench scripts' {
+      #repo_orchestrator
+      technology 'bash, Docker'
+      description 'scripts/docker_repl.sh builds truthdb-repl:local from truthdb/Dockerfile.repl and runs server + truthdb-cli repl (volume truthdb-repl-data at /data). scripts/docker_bench.sh builds truthdb-bench:local from truthdb/Dockerfile.bench and runs server + truthdb-bench. Both detect amd64/arm64 and unconfine seccomp on macOS.'
+    }
+    localBuilds = container 'Local installer build scripts' {
+      #repo_installer_kernel
+      technology 'bash, Docker'
+      description 'installer-kernel/build_in_container.sh (kernel in the builder image, builds the image locally if missing), installer-kernel/build_iso_with_local_kernel.sh and installer-iso/build_in_container.sh (dev mode ISO from sibling checkouts).'
+    }
+  }
+
+  // truthdb release
+  delivery.truthdbRelease -> delivery.truthdbTarball 'publishes'
+  delivery.truthdbDeb -> delivery.debs 'publishes'
+  delivery.truthdbDeb -> delivery.aptPublish 'repository_dispatch new-debs'
+  delivery.aptPublish -> delivery.debs 'gh release download'
+  delivery.aptPublish -> delivery.aptRepo 'reprepro includedeb, commit, push'
+  delivery.aptRepo -> github.githubPages 'served by'
+  operator -> delivery.aptRepo 'apt-get install truthdb-server truthdb-cli'
+  delivery.debs -> truthdb.server 'packages'
+  delivery.debs -> truthdb.cli 'packages'
+  delivery.truthdbTarball -> truthdb.server 'packages'
+  delivery.truthdbCi -> sqlClients 'conformance tests with'
+
+  // installer chain
+  delivery.builderImageRelease -> delivery.builderImage 'pushes'
+  delivery.builderImage -> github.ghcr 'stored in'
+  delivery.kernelRelease -> delivery.builderImage 'runs inside'
+  delivery.kernelRelease -> kernelOrg 'downloads Linux 6.12 source'
+  delivery.kernelRelease -> delivery.kernelEfi 'publishes'
+  delivery.installerRelease -> delivery.installerTarball 'publishes'
+  delivery.isoRelease -> delivery.isoBuild 'runs with INPUT_MODE=release'
+  delivery.isoBuild -> delivery.kernelEfi 'downloads latest, checks sha256'
+  delivery.isoBuild -> delivery.installerTarball 'downloads latest (release mode)'
+  delivery.isoBuild -> delivery.truthdbTarball 'downloads latest (release mode)'
+  delivery.isoBuild -> debianMirror 'debootstrap bookworm minbase'
+  delivery.isoBuild -> installer.payload 'builds'
+  delivery.isoRelease -> delivery.iso 'publishes'
+  delivery.iso -> installer 'contains'
+  delivery.kernelEfi -> installer.kernel 'is'
+  delivery.installerTarball -> installer.installerBin 'contains'
+  operator -> delivery.iso 'downloads and writes to boot media'
+
+  delivery -> github.githubActions 'workflows run on'
+
+  // tooling
+  maintainer -> tooling.orchestrator 'oc.sh / .bin/orchestrator'
+  maintainer -> tooling.dockerScripts 'runs'
+  maintainer -> tooling.localBuilds 'runs'
+  tooling.orchestrator.cliMain -> tooling.orchestrator.tui 'draws via'
+  tooling.orchestrator.cliMain -> tooling.orchestrator.workspaceUpdate 'workspace-update'
+  tooling.orchestrator.cliMain -> tooling.orchestrator.releaseIso 'release-iso'
+  tooling.orchestrator.cliMain -> tooling.orchestrator.monitor 'monitor'
+  tooling.orchestrator.workspaceUpdate -> tooling.orchestrator.reporter 'progress'
+  tooling.orchestrator.releaseIso -> tooling.orchestrator.reporter 'progress'
+  tooling.orchestrator.reporter -> tooling.orchestrator.tui 'ChannelReporter events'
+  tooling.orchestrator.monitor -> tooling.orchestrator.tui 'table rows'
+  tooling.orchestrator.workspaceUpdate -> tooling.orchestrator.gitClient 'clone'
+  tooling.orchestrator.workspaceUpdate -> tooling.orchestrator.githubClient 'repo exists?'
+  tooling.orchestrator.workspaceUpdate -> tooling.workspaceTemplate 'reads (disk copy, else embedded)'
+  tooling.orchestrator.workspaceUpdate -> tooling.localWorkspace 'clones repos, writes root files'
+  tooling.orchestrator.releaseIso -> tooling.orchestrator.gitClient 'preflight, tag, push'
+  tooling.orchestrator.releaseIso -> tooling.orchestrator.githubClient 'wait for release assets'
+  tooling.orchestrator.monitor -> tooling.orchestrator.githubClient 'CI runs, releases, compare'
+  tooling.orchestrator.gitClient -> tooling.localWorkspace 'git CLI'
+  tooling.orchestrator.gitClient -> github.githubRepos 'fetch, clone, push tags (SSH)'
+  tooling.orchestrator.githubClient -> github.githubApi 'HTTPS, GITHUB_TRUTHDB_TOKEN'
+  github.githubRepos -> delivery 'tag push v* triggers release workflows'
+  tooling.dockerScripts -> truthdb.server 'builds and runs in Docker'
+  tooling.dockerScripts -> truthdb.cli 'runs repl in Docker'
+  tooling.dockerScripts -> truthdb.bench 'runs in Docker'
+  tooling.localBuilds -> delivery.builderImage 'builds kernel inside'
+  tooling.localBuilds -> delivery.isoBuild 'runs with INPUT_MODE=dev'
+  tooling.localBuilds -> tooling.localWorkspace 'builds from sibling checkouts'
+}

@@ -1,0 +1,76 @@
+// The public website (Truthdb/website) and the documentation, brand and
+// org-template repos (Truthdb/docs, Truthdb/assets, Truthdb/.github).
+
+model {
+
+  website = system 'TruthDB website' {
+    #repo_website
+    description 'Public marketing site. Before launch, the public sees a "Coming soon" page and allowlisted users can sign in to preview the real site.'
+    link https://github.com/Truthdb/website
+
+    spa = container 'Website SPA' {
+      #repo_website
+      technology 'Vue 3, Vite 6, TypeScript, Pinia, vue-router, vue-i18n'
+      description 'Single-page app in en, da, fr and es (/:lang/ routes). Served from Firebase Hosting with an SPA rewrite to /index.html.'
+
+      pages = component 'Pages and sections' {
+        technology 'views/Home.vue, components/'
+        description 'Hero, Pillars, Capabilities, OneSystem, Install, ClosingCta, NavBar, Footer, LangSwitch.'
+      }
+      launchGate = component 'Launch gate' {
+        technology 'App.vue, lib/launch.ts, components/ComingSoon.vue'
+        description 'VITE_LAUNCHED and VITE_PREVIEW_ALLOWLIST decide between the coming-soon page and the full site. Client-side only, not a security boundary.'
+      }
+      authStore = component 'Auth' {
+        technology 'stores/auth.ts, composables/useAuthListener.ts, components/AuthModal.vue'
+        description 'Google sign-in through Firebase Auth.'
+      }
+      consent = component 'Cookie consent and analytics' {
+        technology 'components/CookieBanner.vue, analytics/analytics.ts'
+        description 'Loads GA4 only after the visitor accepts.'
+      }
+      styles = component 'Strata styles' {
+        technology 'src/styles/truthdb.css'
+        description 'Byte-identical copy of assets/visual-identity/truthdb.css.'
+      }
+    }
+  }
+
+  knowledge = system 'Documentation and brand' {
+    description 'Repos that hold no running code: documentation, the visual identity, and the org-level GitHub templates.'
+
+    docsRepo = datastore 'docs' {
+      #repo_docs
+      technology 'Markdown, LikeC4'
+      description 'VISION, ROADMAP, RELATIONAL_DB_PLAN, INSTALL_GUIDE, security review, obsolete ADRs, and these C4 diagrams. Not published to a site.'
+      link https://github.com/Truthdb/docs
+    }
+    assetsRepo = datastore 'assets' {
+      #repo_assets
+      technology 'CSS, HTML and JSX mockups'
+      description 'Strata design system (visual-identity/truthdb.css), logo, favicon, website and console mockups. No build.'
+      link https://github.com/Truthdb/assets
+    }
+    orgTemplates = datastore '.github' {
+      #repo_github
+      technology 'Markdown, issue forms'
+      description 'CONTRIBUTING, SECURITY, SUPPORT, CODE_OF_CONDUCT, PR template, issue templates, and the org profile README.'
+      link https://github.com/Truthdb/.github
+    }
+  }
+
+  visitor -> website.spa 'browses'
+  visitor -> website.spa.launchGate 'sees coming-soon or full site'
+  website.spa.launchGate -> website.spa.authStore 'allowlist check after sign-in'
+  website.spa.launchGate -> website.spa.pages 'renders when launched or allowlisted'
+  website.spa.authStore -> firebase.firebaseAuth 'Google sign-in'
+  website.spa.consent -> googleAnalytics 'gtag, after consent'
+  website.spa.pages -> website.spa.styles 'styled by'
+  website.spa -> googleFonts 'Archivo, Spline Sans Mono'
+  firebase.firebaseHosting -> website.spa 'serves'
+  delivery.websiteRelease -> firebase.firebaseHosting 'deploys live and preview channels'
+
+  knowledge.assetsRepo -> website.spa.styles 'CSS and logo copied by hand'
+  knowledge.orgTemplates -> github.githubRepos 'default community files for every repo'
+  delivery.orchestratorRelease -> tooling.orchestrator 'packages'
+}

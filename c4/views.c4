@@ -1,0 +1,256 @@
+views {
+
+  // ---------------------------------------------------------------- landscape
+
+  view index {
+    title 'TruthDB landscape'
+    description 'Every system in the Truthdb organisation, the people who use them, and the external services they depend on.'
+    include *
+  }
+
+  // ---------------------------------------------------------------- database
+
+  view truthdbContainers of truthdb {
+    title 'TruthDB: containers'
+    include *
+  }
+
+  view serverCrates of truthdb.server {
+    title 'truthdb server: crates'
+    description 'Components are the workspace crates linked into the server binary.'
+    include *
+  }
+
+  view engineComponents of truthdb.server.engine {
+    title 'truthdb-engine'
+    include *
+  }
+
+  view tdsComponents of truthdb.server.tds {
+    title 'truthdb-tds'
+    include *
+  }
+
+  view relationalComponents of truthdb.server.relational {
+    title 'truthdb-relational'
+    include *
+  }
+
+  view coreComponents of truthdb.server.core {
+    title 'truthdb-core (the shared log)'
+    include *
+  }
+
+  dynamic view nativeQuery {
+    title 'Native protocol: a T-SQL command from truthdb-cli'
+    truthdb.cli -> truthdb.server.engine.clientListener 'HelloReq, then CommandReq (TCP 9623)'
+    truthdb.server.engine.clientListener -> truthdb.server.engine.sessionPool 'run_native'
+    truthdb.server.engine.sessionPool -> truthdb.server.relational.lockManager 'acquire locks'
+    truthdb.server.engine.sessionPool -> truthdb.server.engine.engineCore 'execute'
+    truthdb.server.engine.engineCore -> truthdb.server.relational.executor 'T-SQL batch'
+    truthdb.server.relational.executor -> truthdb.server.sql 'lex and parse'
+    truthdb.server.relational.executor -> truthdb.server.relational.relStorage 'rel_* reads and writes'
+    truthdb.server.relational.relStorage -> truthdb.server.relational.relstore 'B+ tree / heap / index ops'
+    truthdb.server.relational.relstore -> truthdb.server.core.bufferPool 'pin pages'
+    truthdb.server.relational.relstore -> truthdb.server.core.recovery 'log page op (RelCtx::apply_op)'
+    truthdb.server.core.recovery -> truthdb.server.core.wal 'append record'
+    truthdb.server.core.wal -> truthdb.server.core.groupCommit 'flush on commit'
+    truthdb.server.core.groupCommit -> truthdb.server.core.directIo 'batched fdatasync'
+    truthdb.server.engine.clientListener -> truthdb.cli 'CommandResp'
+  }
+
+  dynamic view tdsSession {
+    title 'TDS: login and batch from a SQL Server client'
+    sqlClients -> truthdb.server.tds.tdsListener 'PRELOGIN (TCP 1433)'
+    truthdb.server.tds.tdsListener -> truthdb.server.tds.tdsTls 'TLS handshake inside PRELOGIN'
+    sqlClients -> truthdb.server.tds.tdsListener 'LOGIN7'
+    truthdb.server.tds.tdsListener -> truthdb.server.tds.tdsThrottle 'backoff check for (login, IP)'
+    truthdb.server.tds.tdsListener -> truthdb.server.engine.sessionPool 'lookup_login'
+    truthdb.server.engine.sessionPool -> truthdb.server.relational.auth 'verify PBKDF2 hash'
+    sqlClients -> truthdb.server.tds.tdsListener 'SQLBatch'
+    truthdb.server.tds.tdsListener -> truthdb.server.engine.sessionPool 'run_batch'
+    truthdb.server.engine.sessionPool -> truthdb.server.relational.executor 'execute'
+    truthdb.server.tds.tdsListener -> sqlClients 'COLMETADATA, ROW, DONE tokens'
+  }
+
+  dynamic view replicationStream {
+    title 'Replication: streaming the WAL from primary to standby'
+    description 'The same server binary runs on both machines. Listener and sender run on the primary, the receiver on the standby.'
+    truthdb.server.core.replReceiver -> truthdb.server.core.replListener 'standby connects: TLS, HMAC handshake'
+    truthdb.server.core.replListener -> truthdb.server.core.replSender 'spawn sender for this standby'
+    truthdb.server.core.replSender -> truthdb.server.core.storage 'register slot at resume LSN'
+    truthdb.server.core.storage -> truthdb.server.core.wal 'a primary commit appends WAL'
+    truthdb.server.core.wal -> truthdb.server.core.groupCommit 'flush'
+    truthdb.server.core.replSender -> truthdb.server.core.groupCommit 'woken by the flushed watch'
+    truthdb.server.core.replSender -> truthdb.server.core.storage 'read_wal_chunk'
+    truthdb.server.core.replSender -> truthdb.server.core.replReceiver 'LogData'
+    truthdb.server.core.replReceiver -> truthdb.server.core.storage 'apply_wal_stream on the standby (durable)'
+    truthdb.server.core.replReceiver -> truthdb.server.core.replSender 'FlushAck'
+    truthdb.server.core.replSender -> truthdb.server.core.storage 'advance_repl_slot'
+  }
+
+  // ---------------------------------------------------------------- installer
+
+  view installerContainers of installer {
+    title 'Installer: boot chain'
+    include *
+  }
+
+  view installerSteps of installer.installerBin {
+    title 'truthdb-installer: steps'
+    include *
+  }
+
+  dynamic view installFlow {
+    title 'Installing a machine from the ISO'
+    operator -> installer.grub 'boot ISO, pick menu entry'
+    installer.grub -> installer.kernel 'boot'
+    installer.kernel -> installer.init 'run /init'
+    installer.init -> installer.installerBin 'run'
+    installer.installerBin.diskScanner -> installer.targetDisk 'find the one eligible disk'
+    operator -> installer.installerBin 'confirm'
+    installer.installerBin.partitioner -> installer.diskTools 'wipefs, sfdisk'
+    installer.installerBin.formatMount -> installer.diskTools 'mkfs, mount'
+    installer.installerBin.payloadExtract -> installer.payload 'extract Debian + truthdb'
+    installer.installerBin.systemConfig -> installer.diskTools 'chroot: users, network, units'
+    installer.installerBin.bootSetup -> installer.diskTools 'blkid, efibootmgr'
+    installer.diskTools -> installer.targetDisk 'write'
+    installer.init -> operator 'reboot into the installed system'
+  }
+
+  // ---------------------------------------------------------------- delivery
+
+  view deliveryOverview of delivery {
+    title 'Build and release'
+    include *
+  }
+
+  view installerReleaseChain {
+    title 'Installer ISO release chain'
+    description 'What release-iso tags, in order, and which artifacts each release workflow consumes.'
+    include
+      tooling.orchestrator,
+      delivery.builderImageRelease,
+      delivery.builderImage,
+      delivery.kernelRelease,
+      delivery.kernelEfi,
+      delivery.installerRelease,
+      delivery.installerTarball,
+      delivery.truthdbRelease,
+      delivery.truthdbTarball,
+      delivery.isoRelease,
+      delivery.isoBuild,
+      delivery.iso,
+      kernelOrg,
+      debianMirror,
+      github.ghcr,
+      github.githubRepos
+  }
+
+  dynamic view releaseIso {
+    title 'orchestrator release-iso'
+    maintainer -> tooling.orchestrator.releaseIso 'release-iso --version X'
+    tooling.orchestrator.releaseIso -> tooling.orchestrator.gitClient 'preflight all four repos'
+    tooling.orchestrator.gitClient -> github.githubRepos 'push tag on installer-kernel'
+    github.githubRepos -> delivery.kernelRelease 'triggers'
+    delivery.kernelRelease -> delivery.kernelEfi 'publishes'
+    tooling.orchestrator.releaseIso -> tooling.orchestrator.githubClient 'wait for BOOTX64.EFI'
+    tooling.orchestrator.gitClient -> github.githubRepos 'push tag on installer'
+    github.githubRepos -> delivery.installerRelease 'triggers'
+    delivery.installerRelease -> delivery.installerTarball 'publishes'
+    tooling.orchestrator.releaseIso -> tooling.orchestrator.githubClient 'wait for installer tarball'
+    tooling.orchestrator.gitClient -> github.githubRepos 'push tag on truthdb'
+    github.githubRepos -> delivery.truthdbRelease 'triggers'
+    delivery.truthdbRelease -> delivery.truthdbTarball 'publishes'
+    tooling.orchestrator.releaseIso -> tooling.orchestrator.githubClient 'wait for truthdb tarball'
+    tooling.orchestrator.gitClient -> github.githubRepos 'push tag on installer-iso'
+    github.githubRepos -> delivery.isoRelease 'triggers'
+    delivery.isoRelease -> delivery.isoBuild 'INPUT_MODE=release'
+    delivery.isoBuild -> delivery.kernelEfi 'latest'
+    delivery.isoBuild -> delivery.installerTarball 'latest'
+    delivery.isoBuild -> delivery.truthdbTarball 'latest'
+    delivery.isoRelease -> delivery.iso 'publishes'
+    tooling.orchestrator.releaseIso -> tooling.orchestrator.githubClient 'wait for the ISO'
+  }
+
+  dynamic view aptPublishing {
+    title 'Publishing .deb packages to the apt repository'
+    github.githubRepos -> delivery.truthdbDeb 'tag v* on truthdb'
+    delivery.truthdbDeb -> delivery.debs 'build, lintian, smoke-test, upload'
+    delivery.truthdbDeb -> delivery.aptPublish 'repository_dispatch new-debs'
+    delivery.aptPublish -> delivery.debs 'gh release download'
+    delivery.aptPublish -> delivery.aptRepo 'reprepro includedeb, sign, commit, push'
+    delivery.aptRepo -> github.githubPages 'served at truthdb.github.io/apt'
+    operator -> delivery.aptRepo 'apt-get install truthdb-server truthdb-cli'
+  }
+
+  // ---------------------------------------------------------------- tooling
+
+  view toolingOverview of tooling {
+    title 'Developer tooling'
+    include *
+  }
+
+  view orchestratorComponents of tooling.orchestrator {
+    title 'orchestrator'
+    include *
+  }
+
+  // ---------------------------------------------------------------- website and docs
+
+  view websiteContainers of website {
+    title 'TruthDB website'
+    include *
+  }
+
+  view websiteComponents of website.spa {
+    title 'Website SPA'
+    include *
+  }
+
+  view knowledgeOverview of knowledge {
+    title 'Documentation and brand'
+    include *
+  }
+
+  // ---------------------------------------------------------------- deployment
+
+  deployment view deployAppliance {
+    title 'Deployment: bare-metal appliance'
+    include
+      appliance.target,
+      appliance.target.*
+  }
+
+  deployment view deployAptHost {
+    title 'Deployment: apt-installed host'
+    include
+      aptHost.host,
+      aptHost.host.*
+  }
+
+  deployment view deployReplicated {
+    title 'Deployment: primary and standby'
+    include
+      replicated.primary,
+      replicated.primary.*,
+      replicated.standby,
+      replicated.standby.*
+  }
+
+  deployment view deployDocker {
+    title 'Deployment: local Docker'
+    include
+      dockerDev.repl,
+      dockerDev.repl.*,
+      dockerDev.benchC,
+      dockerDev.benchC.*
+  }
+
+  deployment view deployWebsite {
+    title 'Deployment: website'
+    include
+      webHosting.firebaseProject,
+      webHosting.firebaseProject.*
+  }
+}

@@ -1,0 +1,83 @@
+// Where the containers run.
+
+deployment {
+
+  environment appliance 'Bare-metal appliance' {
+    description 'A machine installed from the installer ISO.'
+
+    machine target 'Target machine' {
+      technology 'x86_64, UEFI, Debian 12 bookworm minbase, systemd'
+      description 'Hostname truthdb01. systemd-boot loads the Debian kernel from the ESP. systemd-networkd DHCP and systemd-resolved. Users root and truthdb. No SSH server and no apt sources beyond the debootstrap defaults.'
+
+      server = instanceOf truthdb.server {
+        description 'truthdb.service enabled in multi-user.target; binary at /usr/local/bin/truthdb.'
+      }
+      dbFile = instanceOf truthdb.dbFile {
+        description 'On the ext4 root partition.'
+      }
+    }
+  }
+
+  environment aptHost 'apt-installed host' {
+    description 'Any Debian 12/13 or Ubuntu 22.04/24.04 amd64 machine with the TruthDB apt source configured.'
+
+    machine host 'Debian or Ubuntu host' {
+      technology 'amd64, systemd'
+
+      server = instanceOf truthdb.server {
+        description 'Package truthdb-server: /usr/bin/truthdb, truthdb.service as user truthdb, StateDirectory /var/lib/truthdb, config /etc/truthdb/truthdb.toml.'
+      }
+      cli = instanceOf truthdb.cli {
+        description 'Package truthdb-cli: /usr/bin/truthdb-cli.'
+      }
+      dbFile = instanceOf truthdb.dbFile {
+        description '/var/lib/truthdb/truth.db'
+      }
+    }
+  }
+
+  environment replicated 'Primary and standby' {
+    description 'Two servers with [replication] enabled, the same cluster_uuid and shared_secret. Synchronous commit is optional.'
+
+    machine primary 'Primary' {
+      server = instanceOf truthdb.server {
+        description 'Accepts reads and writes. Replication listener on TCP 9624 (TLS); one WAL sender per standby.'
+      }
+      dbFile = instanceOf truthdb.dbFile
+    }
+    machine standby 'Standby' {
+      server = instanceOf truthdb.server {
+        description 'Redo-only, read-only, no checkpoints. Dials primary_addr, verifies it against tls_ca, applies the WAL stream. Promoted with truthdb-cli promote.'
+      }
+      dbFile = instanceOf truthdb.dbFile
+    }
+
+    standby.server -> primary.server 'connects; receives WAL LogData, returns FlushAck (TCP 9624, TLS, HMAC handshake)'
+  }
+
+  environment dockerDev 'Local Docker' {
+    description 'Started by orchestrator/scripts/docker_repl.sh and docker_bench.sh. Images build with rust:1-bookworm and run on debian:bookworm-slim with STATE_DIRECTORY=/data.'
+
+    dockerContainer repl 'truthdb-repl:local' {
+      technology 'Dockerfile.repl'
+      description 'Entrypoint starts the server, waits for 9623, then runs truthdb-cli repl. Data in volume truthdb-repl-data unless --ephemeral.'
+      server = instanceOf truthdb.server
+      cli = instanceOf truthdb.cli
+      dbFile = instanceOf truthdb.dbFile
+    }
+    dockerContainer benchC 'truthdb-bench:local' {
+      technology 'Dockerfile.bench'
+      server = instanceOf truthdb.server
+      bench = instanceOf truthdb.bench
+      dbFile = instanceOf truthdb.dbFile
+    }
+  }
+
+  environment webHosting 'Website hosting' {
+    cloud firebaseProject 'Firebase project truthdb-70bc4' {
+      technology 'Firebase Hosting'
+      description 'Live channel from release tags; preview channels from PRs. /assets/** cached as immutable.'
+      spa = instanceOf website.spa
+    }
+  }
+}

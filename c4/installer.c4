@@ -1,0 +1,98 @@
+// The bare-metal installer as it runs on the target machine. Built from
+// Truthdb/installer-iso, Truthdb/installer-kernel and Truthdb/installer.
+// How these pieces are built and published is in delivery.c4.
+
+model {
+
+  installer = system 'TruthDB Installer' {
+    description 'Bootable UEFI/BIOS ISO that wipes a single eligible disk and lays down Debian 12 bookworm minbase with the TruthDB server enabled. Works offline: everything it installs is inside the initramfs.'
+
+    grub = container 'GRUB boot menu' {
+      #repo_installer_iso
+      technology 'GRUB, grub-mkrescue'
+      description 'grub/grub.cfg: six entries (normal, dedicated VT, safe graphics, verbose debug, serial console, rescue shell). Sets truthdb.serial_ui, truthdb.ui_vt1, truthdb.rescue, truthdb.debug kernel flags.'
+    }
+
+    kernel = container 'Installer kernel' {
+      #repo_installer_kernel
+      technology 'Linux 6.12, bzImage published as BOOTX64.EFI'
+      description 'Custom config truthdb-installer-kernel.config: EFI_STUB, RD_ZSTD, VIRTIO_BLK, NVME, EXT4, VFAT, ISO9660, Xen and Hyper-V drivers. No built-in initramfs.'
+    }
+
+    init = container 'initramfs /init' {
+      #repo_installer_iso
+      technology 'busybox sh, zstd cpio'
+      description 'initramfs/init: mounts proc, sys, dev, devpts, run; runs mdev; picks the console from kernel flags; runs the installer. Reboots on success, drops to a busybox shell on failure.'
+    }
+
+    installerBin = container 'truthdb-installer' {
+      #repo_installer
+      technology 'Rust, static musl binary'
+      description 'Console-only installer with blocking stdin prompts. Runs the steps in installer/src/main.rs in order.'
+
+      diskScanner = component 'Disk scanner' {
+        technology 'platform/disks.rs'
+        description 'Reads /sys/block. Skips virtual, removable, read-only and mounted devices and anything under 8 GiB. Refuses to continue if more than one disk qualifies.'
+      }
+      partitioner = component 'Partitioner' {
+        technology 'platform/partition.rs'
+        description 'wipefs -a, then GPT via sfdisk (parted fallback): p1 512 MiB ESP, p2 Linux root on the rest.'
+      }
+      formatMount = component 'Format and mount' {
+        technology 'platform/install.rs'
+        description 'mkfs.vfat -F32 -n EFI, mkfs.ext4 -L root; mounts root at /mnt and the ESP at /mnt/boot/efi.'
+      }
+      payloadExtract = component 'Payload extraction' {
+        technology 'platform/install.rs'
+        description 'Extracts /payload/debian-minbase-amd64-bookworm.tar.zst onto /mnt with tar --zstd.'
+      }
+      systemConfig = component 'System configuration' {
+        technology 'platform/install.rs, chroot'
+        description 'Hostname truthdb01; users root and truthdb (sudo) with a hardcoded initial password; systemd-networkd DHCP on all wired, wifi and usb interfaces; systemd-resolved; unit symlinks written directly into multi-user.target.wants.'
+      }
+      bootSetup = component 'Boot setup' {
+        technology 'platform/install.rs'
+        description 'fstab by UUID; systemd-boot as EFI/BOOT/BOOTX64.EFI and EFI/systemd/; Debian kernel and initrd copied to EFI/debian/; loader entry with timeout 0; optional efibootmgr NVRAM entry "Debian (TruthDB)".'
+      }
+    }
+
+    diskTools = container 'Disk and boot tools' {
+      #repo_installer_iso
+      technology 'util-linux, e2fsprogs, dosfstools, efibootmgr, zstd, systemd-boot-efi'
+      description 'Host binaries and their shared libraries copied into the initramfs by build_iso.sh: wipefs, sfdisk, partprobe, blkid, mkfs.vfat, mkfs.ext4, mount, umount, tar, zstd, chroot, efibootmgr, bootctl.'
+    }
+
+    payload = datastore 'Root filesystem payload' {
+      #repo_installer_iso
+      technology 'tar.zst, debootstrap minbase'
+      description 'debian-minbase-amd64-bookworm.tar.zst: Debian bookworm with systemd, linux-image-amd64 and initramfs-tools, plus /usr/local/bin/truthdb and /lib/systemd/system/truthdb.service enabled in multi-user.target. The unit file comes from truthdb/packaging and its ExecStart is /usr/bin/truthdb.'
+    }
+
+    targetDisk = datastore 'Target disk' {
+      technology 'GPT: FAT32 ESP + ext4 root'
+      description 'The single non-removable disk of at least 8 GiB on the target machine. No swap and no separate data partition.'
+    }
+  }
+
+  operator -> installer.grub 'boots the ISO and picks a menu entry'
+  installer.grub -> installer.kernel 'boots with kernel flags'
+  installer.kernel -> installer.init 'runs /init from the initrd'
+  installer.init -> installer.installerBin 'runs; reboots on success'
+  operator -> installer.installerBin 'confirms prompts on the console'
+
+  installer.installerBin.diskScanner -> installer.installerBin.partitioner 'chosen disk'
+  installer.installerBin.partitioner -> installer.installerBin.formatMount 'partition paths'
+  installer.installerBin.formatMount -> installer.installerBin.payloadExtract 'mounted /mnt'
+  installer.installerBin.payloadExtract -> installer.installerBin.systemConfig 'populated root'
+  installer.installerBin.systemConfig -> installer.installerBin.bootSetup 'configured system'
+
+  installer.installerBin.diskScanner -> installer.targetDisk 'reads /sys/block, /proc/self/mountinfo'
+  installer.installerBin.partitioner -> installer.diskTools 'wipefs, sfdisk, partprobe'
+  installer.installerBin.formatMount -> installer.diskTools 'mkfs.vfat, mkfs.ext4, mount'
+  installer.installerBin.payloadExtract -> installer.payload 'reads'
+  installer.installerBin.payloadExtract -> installer.diskTools 'tar, zstd'
+  installer.installerBin.systemConfig -> installer.diskTools 'chroot'
+  installer.installerBin.bootSetup -> installer.diskTools 'blkid, efibootmgr'
+  installer.diskTools -> installer.targetDisk 'partitions, formats, writes'
+  installer.payload -> truthdb.server 'contains the server binary and its systemd unit'
+}

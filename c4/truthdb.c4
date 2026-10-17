@@ -1,0 +1,245 @@
+// The TruthDB database (repo Truthdb/truthdb). Crate and module names match
+// truthdb/Cargo.toml and truthdb/crates/*.
+
+model {
+
+  truthdb = system 'TruthDB' {
+    #repo_truthdb
+    description 'Relational database with a T-SQL dialect and document search, built on one shared log over a single preallocated file. Linux only (io_uring, O_DIRECT).'
+    link https://github.com/Truthdb/truthdb
+
+    server = container 'truthdb server' {
+      #repo_truthdb
+      technology 'Rust, Tokio, io_uring'
+      description 'Daemon (binary truthdb, package truthdb-server). Listens on TCP 9623 (native), optionally TCP 1433 (TDS) and TCP 9624 (replication). Config: built-in defaults, then ~/.config/org.truthdb/truthdb/truthdb.toml, then /etc/truthdb/truthdb.toml, or only $TRUTHDB_CONFIG.'
+
+      serverMain = component 'Server main' {
+        technology 'src/main.rs, src/config.rs'
+        description 'Loads TOML config, opens or creates storage, builds the engine, migrates [tds.auth] seed logins on first boot, spawns the worker pool, starts the listeners and the replication task, stops on SIGTERM/SIGINT.'
+      }
+
+      engine = component 'truthdb-engine' {
+        technology 'crate'
+        description 'Ties relational and search together, runs the session worker pool and hosts the native listener.'
+
+        clientListener = component 'Native client listener' {
+          technology 'client_listener.rs, dispatcher.rs'
+          description 'TCP accept loop on 9623. Dispatches Hello, Heartbeat and Command frames; Command goes to EngineHandle::run_native.'
+        }
+        sessionPool = component 'Session worker pool' {
+          technology 'session/'
+          description 'Worker threads (CPUs - 2, minimum 2), scheduler with sessions, lock table and parked queue. EngineHandle offers run_batch, run_rpc, stream_*, run_native and lookup_login.'
+        }
+        engineCore = component 'Engine' {
+          technology 'engine/mod.rs'
+          description 'Engine { Arc<RelStorage>, RwLock<EngineMeta> }. Routes JSON-bodied commands to search and everything else to SQL. Owns checkpoint and restartpoint thresholds.'
+        }
+      }
+
+      tds = component 'truthdb-tds' {
+        technology 'crate'
+        description 'MS-TDS (SQL Server protocol) gateway. Disabled by default.'
+
+        tdsListener = component 'TDS listener' {
+          technology 'lib.rs, server/'
+          description 'TCP 1433. PRELOGIN, LOGIN7, then a SQLBatch/RPC loop over EngineHandle. Renders results as TDS tokens.'
+        }
+        tdsTls = component 'TDS TLS' {
+          technology 'tls.rs, rustls'
+          description 'TLS tunnelled inside PRELOGIN. Policy off, optional or required, PEM cert and key.'
+        }
+        tdsRpc = component 'RPC' {
+          technology 'rpc.rs'
+          description 'sp_executesql and the sp_prepare family.'
+        }
+        tdsThrottle = component 'Login throttle' {
+          technology 'throttle.rs'
+          description 'Per (login, IP) brute-force backoff.'
+        }
+      }
+
+      relational = component 'truthdb-relational' {
+        technology 'crate'
+        description 'T-SQL execution over clustered B+ trees, heaps, secondary indexes and a row-version store, plus auth and the lock manager.'
+
+        executor = component 'SQL executor' {
+          technology 'engine/relational/'
+          description 'Binds and runs each parsed statement as a Volcano-style pipeline: query (binding, joins, scans, sort, CTEs), plan (seek vs scan), aggregates, DML, DDL, constraints, triggers, procedural T-SQL, transactions, sys views, restore, cancel.'
+        }
+        relStorage = component 'RelStorage' {
+          technology 'storage/'
+          description 'Wraps core Storage and provides the rel_* API: catalog, DML, security, transactions, recovery hooks, readable standby.'
+        }
+        relstore = component 'Relational page structures' {
+          technology 'relstore/'
+          description 'B+ tree, heap, secondary index, row and key encoding, overflow pages, catalog (B+ tree object 1), spill to temp extents, in-memory version store for RCSI/SNAPSHOT.'
+        }
+        lockManager = component 'Lock manager' {
+          technology 'lock.rs'
+          description 'Database, table and row two-phase locking, driven by the engine session scheduler.'
+        }
+        auth = component 'Auth' {
+          technology 'auth.rs, ring'
+          description 'PBKDF2-HMAC-SHA256 login password hashes.'
+        }
+      }
+
+      sql = component 'truthdb-sql' {
+        technology 'crate'
+        description 'Pure T-SQL front end with no I/O: lexer, parser, AST, three-valued-logic evaluator, collations (ICU), SQL Server error codes.'
+      }
+
+      search = component 'truthdb-search' {
+        technology 'crate'
+        description 'Elasticsearch-like document search: index state, documents, postings. Persists through WAL events and snapshots in the shared log.'
+      }
+
+      core = component 'truthdb-core' {
+        technology 'crate'
+        description 'The shared log: single-file storage, WAL, buffer pool, io_uring/O_DIRECT I/O, ARIES recovery, checkpoints, backup and replication transport.'
+
+        storage = component 'Storage' {
+          technology 'storage/'
+          description 'Create, open and grow the file; checkpoints; durability; allocation; backup and restore; replication slots, streaming, synchronous commit, promotion and readable standby.'
+        }
+        wal = component 'WAL' {
+          technology 'wal/'
+          description 'WAL ring writer and recovery scan, in-memory tail-page log buffer, ARIES-style record payloads.'
+        }
+        groupCommit = component 'Group commit' {
+          technology 'group_commit.rs'
+          description 'Dedicated log-writer thread that batches WAL fsyncs and publishes the flushed watermark.'
+        }
+        bufferPool = component 'Buffer pool' {
+          technology 'relstore/buffer_pool.rs'
+          description 'Clock-eviction page frames (64 MiB default). Steal allowed, WAL flushed before data pages.'
+        }
+        recovery = component 'ARIES recovery' {
+          technology 'relstore/recovery.rs, relstore/ctx.rs'
+          description 'Analysis, redo and undo. RelCtx::apply_op applies and logs physiological redo ops.'
+        }
+        allocator = component 'Page allocator' {
+          technology 'allocator.rs'
+          description 'Bitmap allocator in 64-page extents, plus temp extents.'
+        }
+        directIo = component 'Direct I/O' {
+          technology 'direct_io.rs, io_uring, O_DIRECT'
+          description 'DirectFile over an io_uring ring with page-aligned buffers; fdatasync for the WAL.'
+        }
+        backup = component 'Backup format' {
+          technology 'backup.rs'
+          description 'TDBBAK1 backup files with xxh64-checksummed blocks.'
+        }
+        replListener = component 'Replication listener' {
+          technology 'repl/listener.rs, repl/server.rs, repl/handshake.rs, repl/tls.rs'
+          description 'Primary only. Accepts standbys on TCP 9624 over TLS (rustls, mandatory), runs the HMAC-SHA256 shared-secret handshake with cluster_uuid and epoch fencing, then hands the stream to a sender.'
+        }
+        replSender = component 'WAL sender' {
+          technology 'repl/sender.rs'
+          description 'Primary only, one per standby. Registers a replication slot, streams the catch-up backlog and then live WAL as LogData frames cut on WAL-entry boundaries, and advances the slot on each FlushAck.'
+        }
+        replReceiver = component 'WAL receiver' {
+          technology 'repl/receiver.rs'
+          description 'Standby only. Reconnect loop that dials primary_addr, verifies the primary against tls_ca, applies each LogData range durably and replies with FlushAck.'
+        }
+      }
+
+      proto = component 'truthdb-proto' {
+        technology 'crate, bincode'
+        description 'Native wire protocol: 8-byte header (u32 length, u16 msg_type, u16 flags) plus bincode payload. Hello, Heartbeat, Command. PROTOCOL_VERSION 1.'
+      }
+      net = component 'truthdb-net' {
+        technology 'crate, Tokio'
+        description 'Async read_frame / write_frame over a TcpStream, 8 MiB payload limit.'
+      }
+    }
+
+    dbFile = datastore 'Database file' {
+      #repo_truthdb
+      technology 'single preallocated file, 4 KiB pages'
+      description 'storage.path (default truth.db, 10 GiB; /var/lib/truthdb/truth.db under systemd). File header, A/B superblocks, WAL ring (256 MiB to 1 GiB), metadata, snapshot, allocator, reserved and data regions.'
+    }
+    backupFiles = datastore 'Backup files' {
+      #repo_truthdb
+      technology 'TDBBAK1'
+      description 'Written by BACKUP; read by RESTORE and truthdb-cli restore.'
+    }
+
+    cli = container 'truthdb-cli' {
+      #repo_truthdb
+      technology 'Rust'
+      description 'Client and REPL (package truthdb-cli). Online: repl, repl-status over the native protocol. Offline, opening the database file directly through RelStorage: grow, restore, promote. Links the truthdb-proto, truthdb-net and truthdb-relational crates. Config: ~/.config/org.truthdb/truthdb-cli/truthdb-cli.toml, TRUTHDB_HOST / TRUTHDB_PORT, --host / --port.'
+    }
+
+    bench = container 'truthdb-bench' {
+      #repo_truthdb
+      technology 'Rust'
+      description 'Load generator built on the truthdb-proto and truthdb-net crates: Hello, then CommandReq write and read phases over N connections. Flags --operations, --connections, --payload-size, --write-only, --read-only.'
+    }
+  }
+
+  // Clients
+  dbUser -> truthdb.cli 'types T-SQL into the REPL'
+  sqlClients -> truthdb.server.tds.tdsListener 'MS-TDS, TCP 1433'
+  truthdb.cli -> truthdb.server.engine.clientListener 'native protocol, TCP 9623, plaintext'
+  truthdb.bench -> truthdb.server.engine.clientListener 'native protocol, TCP 9623'
+  truthdb.cli -> truthdb.dbFile 'grow, restore, promote (offline, via RelStorage)'
+  truthdb.cli -> truthdb.backupFiles 'restore --full --log'
+
+  // Server internals
+  truthdb.server.serverMain -> truthdb.server.engine 'builds Engine, spawns worker pool, starts native listener'
+  truthdb.server.serverMain -> truthdb.server.tds.tdsListener 'starts when [tds] enabled'
+  truthdb.server.serverMain -> truthdb.server.core.replListener 'starts when [replication] role = primary'
+  truthdb.server.serverMain -> truthdb.server.core.replReceiver 'starts when [replication] role = standby'
+  truthdb.server.serverMain -> truthdb.server.relational.relStorage 'opens or creates storage'
+
+  truthdb.server.engine.clientListener -> truthdb.server.net 'read_frame / write_frame'
+  truthdb.server.engine.clientListener -> truthdb.server.engine.sessionPool 'run_native'
+  truthdb.server.engine.sessionPool -> truthdb.server.engine.engineCore 'executes batches'
+  truthdb.server.engine.sessionPool -> truthdb.server.relational.lockManager 'acquires and releases locks'
+  truthdb.server.engine.engineCore -> truthdb.server.relational.executor 'T-SQL batches'
+  truthdb.server.engine.engineCore -> truthdb.server.search 'JSON search commands'
+  truthdb.server.engine.engineCore -> truthdb.server.relational.relStorage 'checkpoints, login lookup'
+
+  truthdb.server.tds.tdsListener -> truthdb.server.tds.tdsTls 'PRELOGIN encryption'
+  truthdb.server.tds.tdsListener -> truthdb.server.tds.tdsThrottle 'checks before LOGIN7'
+  truthdb.server.tds.tdsListener -> truthdb.server.tds.tdsRpc 'RPC requests'
+  truthdb.server.tds.tdsListener -> truthdb.server.engine.sessionPool 'run_batch / run_rpc / lookup_login'
+  truthdb.server.tds.tdsRpc -> truthdb.server.engine.sessionPool 'run_rpc'
+  truthdb.server.tds -> truthdb.server.sql 'error codes, types'
+
+  truthdb.server.relational.executor -> truthdb.server.sql 'parse, evaluate'
+  truthdb.server.relational.executor -> truthdb.server.relational.relStorage 'rel_* calls'
+  truthdb.server.relational.executor -> truthdb.server.relational.auth 'login and permission checks'
+  truthdb.server.relational.relStorage -> truthdb.server.relational.relstore 'reads and writes rows, indexes, catalog'
+  truthdb.server.relational.relStorage -> truthdb.server.core.storage 'wraps'
+  truthdb.server.relational.relstore -> truthdb.server.core.bufferPool 'pins pages'
+  truthdb.server.relational.relstore -> truthdb.server.core.recovery 'logs page ops via RelCtx'
+  truthdb.server.search -> truthdb.server.core.storage 'WAL events and snapshots'
+
+  truthdb.server.core.storage -> truthdb.server.core.wal 'appends records'
+  truthdb.server.core.storage -> truthdb.server.core.allocator 'allocates pages'
+  truthdb.server.core.storage -> truthdb.server.core.backup 'BACKUP / RESTORE'
+  truthdb.server.core.storage -> truthdb.server.core.recovery 'runs on open'
+  truthdb.server.core.wal -> truthdb.server.core.groupCommit 'flush requests'
+  truthdb.server.core.groupCommit -> truthdb.server.core.directIo 'batched fdatasync'
+  truthdb.server.core.bufferPool -> truthdb.server.core.directIo 'page reads and write-back'
+  truthdb.server.core.recovery -> truthdb.server.core.wal 'scans and redoes'
+  truthdb.server.core.replListener -> truthdb.server.core.replSender 'spawns per accepted standby'
+  truthdb.server.core.replSender -> truthdb.server.core.storage 'read_wal_chunk, advance_repl_slot'
+  truthdb.server.core.replSender -> truthdb.server.core.groupCommit 'waits on the flushed watch'
+  truthdb.server.core.replReceiver -> truthdb.server.core.storage 'apply_wal_stream (redo only)'
+  truthdb.server.core.replReceiver -> truthdb.server.core.replListener 'standby dials the primary: TLS, HMAC handshake (TCP 9624)' {
+    #optional
+  }
+  truthdb.server.core.replSender -> truthdb.server.core.replReceiver 'LogData frames to the standby' {
+    #optional
+  }
+  truthdb.server.core.replReceiver -> truthdb.server.core.replSender 'FlushAck to the primary' {
+    #optional
+  }
+  truthdb.server.core.directIo -> truthdb.dbFile 'io_uring, O_DIRECT'
+  truthdb.server.core.backup -> truthdb.backupFiles 'writes and reads'
+
+  truthdb.server.net -> truthdb.server.proto 'encodes and decodes frames'
+}

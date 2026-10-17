@@ -1,0 +1,68 @@
+// People and external systems. The TruthDB-owned systems are defined in
+// truthdb.c4, installer.c4, delivery.c4 and website.c4.
+
+model {
+
+  dbUser = person 'Database user' {
+    description 'Application developer or DBA who runs T-SQL against TruthDB, either with truthdb-cli or with SQL Server tooling.'
+  }
+  operator = person 'Operator' {
+    description 'Installs and runs TruthDB: boots the installer ISO on bare metal, or installs the .deb packages from the apt repository.'
+  }
+  maintainer = person 'Maintainer' {
+    description 'TruthDB developer. Works in the multi-repo workspace and cuts releases with the orchestrator.'
+  }
+  visitor = person 'Website visitor' {
+    description 'Member of the public reading the marketing site. Allowlisted users can sign in to preview it before launch.'
+  }
+
+  sqlClients = externalSystem 'SQL Server clients' {
+    description 'Tools and drivers that speak MS-TDS: sqlcmd (ODBC), go-sqlcmd, pytds, go-mssqldb, mssql-jdbc, SSMS. The TDS conformance CI job runs the first five.'
+  }
+
+  github = externalSystem 'GitHub' {
+    description 'Hosts the Truthdb organisation: git repositories, Actions, Releases, Pages and the container registry.'
+    link https://github.com/Truthdb
+
+    githubRepos = datastore 'Git repositories' {
+      description 'git@github.com:Truthdb/<repo>.git, one per workspace directory.'
+    }
+    githubActions = externalSystem 'GitHub Actions' {
+      description 'Runs every repo\'s ci.yml and release workflows.'
+    }
+    githubApi = externalSystem 'GitHub REST API' {
+      description 'api.github.com: releases, Actions runs, compare.'
+    }
+    githubPages = externalSystem 'GitHub Pages' {
+      description 'Serves the apt repository at https://truthdb.github.io/apt/.'
+    }
+    ghcr = datastore 'GitHub Container Registry' {
+      description 'ghcr.io/truthdb/truthdb-installer-kernel-builder-image (amd64 + arm64).'
+    }
+  }
+
+  firebase = externalSystem 'Firebase' {
+    description 'Google Firebase project truthdb-70bc4.'
+    firebaseHosting = externalSystem 'Firebase Hosting' {
+      description 'Serves the website SPA (live channel plus per-PR preview channels).'
+    }
+    firebaseAuth = externalSystem 'Firebase Auth' {
+      description 'Google sign-in for the pre-launch preview allowlist.'
+    }
+  }
+  googleAnalytics = externalSystem 'Google Analytics 4' {
+    description 'Loaded only after the visitor accepts the cookie banner.'
+  }
+  googleFonts = externalSystem 'Google Fonts' {
+    description 'Archivo and Spline Sans Mono.'
+  }
+  kernelOrg = externalSystem 'kernel.org' {
+    description 'cdn.kernel.org Linux 6.12 source tarball, checked against a pinned SHA256.'
+  }
+  debianMirror = externalSystem 'Debian mirror' {
+    description 'deb.debian.org, used by debootstrap to build the bookworm minbase root filesystem.'
+  }
+
+  dbUser -> sqlClients 'uses'
+  maintainer -> github.githubRepos 'pushes code, reviews PRs'
+}
