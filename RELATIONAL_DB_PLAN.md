@@ -34,6 +34,7 @@ TruthDB today implements only the start of Elasticsearch-like functionality (in-
 ## Cross-cutting architecture
 
 - **Crate/module layout**: new `crates/truthdb-sql` (pure: lexer, parser, AST with spans, type system, `Datum`, 3VL evaluator, binder via `CatalogProvider` trait, logical planner, SQL error codes) · `truthdb-core/src/relstore/` (pages, buffer pool, B+ tree, heap, row/key codecs) · `truthdb-core/src/wal/` + `txn/` (ARIES log manager, transaction/lock managers) · `truthdb-core/src/rel/` (catalog, physical planner, executors, session, results) · new `crates/truthdb-tds` (TDS frontend).
+  *As built, after the split into the shared log and engine crates (truthdb#185, #186):* `truthdb-core` is the shared log only (file layout, io_uring I/O, allocator, WAL ring and record framing, group commit, buffer pool, slotted pages, the ARIES page-op context and restart driver, checkpoints, backup, replication); it reaches an engine only through the `EngineParticipant` trait (catalog root, cache reload, logical undo, readable-standby capture). `truthdb-relational` holds the executor, the relational storage and `rel_*` API, the B+ tree/heap/index/row/key/catalog/version-store structures, the lock manager and login hashing. `truthdb-search` holds the legacy ES engine. `truthdb-engine` holds the combined `Engine`, the session worker pool and the native 9623 listener. `truthdb-sql` and `truthdb-tds` are as above.
 - **Command routing**: legacy ES commands all require a `{` JSON body after their prefix — that shape routes to the frozen ES path; everything else is SQL. `CREATE INDEX ix ON t(c)` has no `{`, so no collision. Router regression tests lock both grammars.
 - **ARIES essentials**: every WAL record carries `{lsn, prev_lsn(txn chain), txn_id, redo + undo payloads}`; page headers carry `page_lsn`; dirty-page table + active-txn table maintained; restart = analysis → redo (repeat history) → undo with CLRs; fuzzy checkpoints (begin/end records + DPT/ATT snapshots) bound recovery time and WAL-ring reclamation.
 - **Key encoding**: B+ tree keys are order-preserving byte strings (sign-flipped BE ints, IEEE total-order floats, NULL-first). String keys use **icu4x collation sort keys** as the comparable form with the original string stored in the leaf value (sort keys aren't stable across ICU upgrades — document index rebuild on major icu4x bumps).
@@ -789,6 +790,6 @@ Resolved coupling (was "forward coupling to watch"): making WHERE equality colla
 
 ### Architecture notes
 
-- The binder lives in `truthdb-core`, not behind the planned `CatalogProvider` trait in `truthdb-sql`.
+- The binder lives in the executor (`truthdb-relational`, formerly `truthdb-core`), not behind the planned `CatalogProvider` trait in `truthdb-sql`.
 - Stage 3's `spawn_blocking` execution model was superseded by the Stage 12 worker-thread pool.
 - Search (ES) coexistence holds: search WAL events keep `entry_type=1`, relational records use type 3, one ring demultiplexed by type; the ES DSL is still reachable only via the native protocol.
