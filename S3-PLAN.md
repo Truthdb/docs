@@ -1,0 +1,65 @@
+# TruthDB: S3 Workflow Checklist
+
+Every S3 workflow, one numbered item each. When an item is done, overwrite its line with what was built.
+
+## Buckets and objects
+
+1. Manage buckets: create, list, inspect configuration, change settings, empty, delete.
+2. Store objects: upload a file, upload bytes from an application, upload many files, replace an existing object.
+3. Multipart uploads: upload in parts, retry failed parts, resume, complete or abort, clean up abandoned uploads.
+4. Retrieve objects: download, stream contents, download many, fetch a byte range, fetch a specific version.
+5. Inspect objects: existence check and metadata (size, content type, modification time, checksum) without downloading the body.
+6. Browse and organise: list objects, list by key prefix, paginate, folder-like paths via prefixes and delimiters.
+7. Copy and move: copy within or between buckets and across regions; rename/move as copy followed by delete.
+8. Delete objects: one, many in a batch, everything under a prefix, permanently delete specific versions.
+9. Metadata and tags: read and set user metadata, content type, cache headers, download filename; add, change and remove tags.
+10. Versioning: enable/suspend, list versions, retrieve an older version, restore overwritten data, recover deleted objects via delete markers.
+
+## Search
+
+11. Exact lookup by bucket and key.
+12. Prefix search via native listing.
+13. Substring or pattern match on names (client-side filtering or a name index).
+14. Search by metadata (tags, size, storage class) through a queryable metadata index.
+15. Full-text search inside object contents.
+16. Query structured file contents (Athena/Spark-style SQL over stored files).
+17. Semantic similarity search over embeddings (S3 Vectors equivalent).
+
+## Operations
+
+18. Access control: grant and revoke read/write/list/delete, scope to buckets or prefixes, cross-account access, block public access.
+19. Sharing: presigned download URLs, presigned uploads, public read for selected content.
+20. Data protection: encryption at rest, key management, retention periods (Object Lock), legal holds.
+21. Lifecycle: transition to cheaper storage classes, expire objects after a period, expire old versions, restore archived objects before retrieval.
+22. Synchronise and migrate: sync local directories, migrate datasets, transfer between storage systems.
+23. Event notifications: emit events on upload and delete; trigger functions or queue jobs for processing pipelines.
+24. Bulk jobs: apply operations to large object collections (Batch Operations).
+25. Serve content: images, downloads, static website hosting, CDN integration, CORS.
+26. Monitoring and audit: storage usage, request/error/cost metrics, access logs, API activity logs, inventory reports.
+
+## Replication
+
+27. Configure replication: choose source and destination, grant required permissions.
+28. Same-region replication.
+29. Cross-region replication.
+30. Cross-account replication.
+31. Selective replication by prefix or tag.
+32. Replication to multiple destinations.
+33. Replicate existing objects and retry failed replication (Batch Replication).
+34. Delete-marker replication setting; permanent version deletes never replicate.
+35. Replication monitoring: status, failures, lag.
+36. Change or stop replication rules; existing destination copies remain.
+
+## Not covered by the source conversation
+
+37. Conditional writes: `If-None-Match` (create only if absent) and `If-Match` (compare-and-swap on ETag).
+38. Strong read-after-write consistency for all operations, stated and tested as a guarantee.
+39. Checksums and integrity: client-supplied checksums (CRC32, CRC32C, SHA-1, SHA-256) verified on upload and returned on download.
+40. Directory buckets (Express One Zone equivalent): low-latency bucket type with native rename.
+41. Table buckets (S3 Tables equivalent): managed Apache Iceberg tables.
+42. Access Points: named endpoints with their own access policies per application.
+43. Object Lambda: transform objects on read.
+44. Requester Pays buckets.
+45. Transfer acceleration.
+46. Storage analytics dashboard (Storage Lens equivalent).
+47. Mount a bucket as a filesystem (Mountpoint equivalent).
