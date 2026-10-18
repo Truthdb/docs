@@ -58,7 +58,7 @@ truthdb-cli --help
 
 ### Configure
 
-Edit `/etc/truthdb/truthdb.toml`. All values shown there are the embedded defaults; uncomment a line to override. Then:
+Edit `/etc/truthdb/truthdb.toml`. All values shown there are the embedded defaults; uncomment a line to override. The server refuses to start if the file is not valid TOML, sets an unknown key, or gives a value of the wrong type; the journal names the file and the key. Then:
 
 ```sh
 sudo systemctl restart truthdb
@@ -91,7 +91,7 @@ sudo apt-get purge truthdb-server truthdb-cli        # removes config, data, and
 
 ## Install via the bare-metal ISO
 
-For dedicated appliances on a fresh machine: see [`truthdb-installer-iso`](https://github.com/Truthdb/installer-iso). Boot the ISO; it partitions the disk, installs Debian, and pre-installs TruthDB. The end state is identical to a Debian host that ran `apt-get install truthdb-server`.
+For dedicated appliances on a fresh machine: see [`truthdb-installer-iso`](https://github.com/Truthdb/installer-iso). Boot the ISO; it asks for a password for the `admin` login account (a member of `sudo`; root's password is locked), then partitions the disk, installs Debian, and pre-installs TruthDB. The end state is identical to a Debian host that ran `apt-get install truthdb-server`.
 
 ---
 
@@ -104,4 +104,4 @@ The keyring step did not complete. Re-run step 1 of the apt install above.
 This should not happen — the packages are built against glibc 2.35 to match Ubuntu 22.04. If you see this, please open an issue with the exact `apt-get` output.
 
 **Service does not start after install.**
-Check `journalctl -u truthdb -n 100`. If a setting you changed in `/etc/truthdb/truthdb.toml` does not appear to take effect, verify the file is valid TOML — a parse error silently falls back to the embedded defaults. Restore the shipped file by reinstalling: `sudo apt-get install --reinstall truthdb-server` (this will prompt about the modified conffile).
+Check `journalctl -u truthdb -n 100`. A line starting `Invalid config:` names the file and the problem: invalid TOML, an unknown or misspelled key (including settings removed in a newer release), or a value of the wrong type. Fix that line, or restore the shipped file by reinstalling: `sudo apt-get install --reinstall truthdb-server` (this will prompt about the modified conffile).
