@@ -6,7 +6,7 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
 
 1. Manage buckets: create, list, inspect configuration, change settings, empty, delete.
 2. ✅ Store objects: PutObject streams the body into the object engine in segments, up to 5 GiB. It verifies SigV4 chunk signatures, checksums and Content-MD5 as the body arrives. Replacing an object releases the old body after a grace period. Uploading many files is a client loop over PutObject (truthdb#203).
-3. Multipart uploads: upload in parts, retry failed parts, resume, complete or abort, clean up abandoned uploads.
+3. ✅ Multipart uploads: Create, UploadPart (a part can be retried or replaced), ListParts and ListMultipartUploads (to resume), Complete (a composite of the parts, no bytes copied; S3 order, ETag and size rules; at most 5 TiB) and Abort. Uploads left open for 7 days are aborted by garbage collection (truthdb#206).
 4. ✅ Retrieve objects: GetObject streams a leased body; it supports single byte ranges (206/416), the If-Match, If-None-Match, If-Modified-Since and If-Unmodified-Since headers, and `versionId` (truthdb#203).
 5. ✅ Inspect objects: HeadObject returns size, ETag (MD5), Last-Modified, content type, the stored system headers and `x-amz-meta-*`, without the body (truthdb#203).
 6. ✅ Browse and organise: ListObjectsV2 and ListObjects support prefix, delimiter with CommonPrefixes, max-keys, start-after or marker, continuation tokens and `encoding-type=url`. A folder whose keys are all deleted is not listed, and each call scans a bounded number of rows (truthdb#204).
