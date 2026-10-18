@@ -11,7 +11,7 @@ model {
     server = container 'truthdb server' {
       #repo_truthdb
       technology 'Rust, Tokio, io_uring'
-      description 'Daemon (binary truthdb, package truthdb-server). Listens on TCP 9623 (native), optionally TCP 1433 (TDS) and TCP 9624 (replication). Config: built-in defaults, then ~/.config/org.truthdb/truthdb/truthdb.toml, then /etc/truthdb/truthdb.toml, or only $TRUTHDB_CONFIG.'
+      description 'Daemon (binary truthdb, package truthdb-server). Listens on TCP 9623 (native), optionally TCP 1433 (TDS) and TCP 9624 (replication). Config: built-in defaults, then ~/.config/org.truthdb/truthdb/truthdb.toml, then /etc/truthdb/truthdb.toml, or only $TRUTHDB_CONFIG; an unreadable file, invalid TOML or an unknown key stops startup with a non-zero exit.'
 
       serverMain = component 'Server main' {
         technology 'src/main.rs, src/config.rs'

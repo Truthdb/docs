@@ -7,10 +7,10 @@ deployment {
 
     machine target 'Target machine' {
       technology 'x86_64, UEFI, Debian 12 bookworm minbase, systemd'
-      description 'Hostname truthdb01. systemd-boot loads the Debian kernel from the ESP. systemd-networkd DHCP and systemd-resolved. Users root and truthdb. No SSH server and no apt sources beyond the debootstrap defaults.'
+      description 'Hostname truthdb01. systemd-boot loads the Debian kernel from the ESP. systemd-networkd DHCP and systemd-resolved. Login user admin (sudo); root password locked; truthdb is a no-login system user. No SSH server and no apt sources beyond the debootstrap defaults.'
 
       server = instanceOf truthdb.server {
-        description 'truthdb.service enabled in multi-user.target; binary at /usr/local/bin/truthdb.'
+        description 'truthdb.service enabled in multi-user.target, runs /usr/bin/truthdb as the truthdb system user.'
       }
       dbFile = instanceOf truthdb.dbFile {
         description 'On the ext4 root partition.'

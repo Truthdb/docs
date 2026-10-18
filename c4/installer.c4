@@ -28,7 +28,7 @@ model {
     installerBin = container 'truthdb-installer' {
       #repo_installer
       technology 'Rust, static musl binary'
-      description 'Console-only installer with blocking stdin prompts. Runs the steps in installer/src/main.rs in order.'
+      description 'Console-only installer with blocking stdin prompts: asks for the admin password (twice, not echoed) before touching the disk. Runs the steps in installer/src/main.rs in order.'
 
       diskScanner = component 'Disk scanner' {
         technology 'platform/disks.rs'
@@ -48,7 +48,7 @@ model {
       }
       systemConfig = component 'System configuration' {
         technology 'platform/install.rs, chroot'
-        description 'Hostname truthdb01; users root and truthdb (sudo) with a hardcoded initial password; systemd-networkd DHCP on all wired, wifi and usb interfaces; systemd-resolved; unit symlinks written directly into multi-user.target.wants.'
+        description 'Hostname truthdb01; creates the admin login user (sudo) with the password asked for at the start and locks root; systemd-networkd DHCP on all wired, wifi and usb interfaces; systemd-resolved; unit symlinks written directly into multi-user.target.wants.'
       }
       bootSetup = component 'Boot setup' {
         technology 'platform/install.rs'
@@ -65,7 +65,7 @@ model {
     payload = datastore 'Root filesystem payload' {
       #repo_installer_iso
       technology 'tar.zst, debootstrap minbase'
-      description 'debian-minbase-amd64-bookworm.tar.zst: Debian bookworm with systemd, linux-image-amd64 and initramfs-tools, plus /usr/local/bin/truthdb and /lib/systemd/system/truthdb.service enabled in multi-user.target. The unit file comes from truthdb/packaging and its ExecStart is /usr/bin/truthdb.'
+      description 'debian-minbase-amd64-bookworm.tar.zst: Debian bookworm with systemd, linux-image-amd64 and initramfs-tools, plus /usr/bin/truthdb, /lib/systemd/system/truthdb.service (from truthdb/packaging) enabled in multi-user.target, and the no-login truthdb system user the service runs as.'
     }
 
     targetDisk = datastore 'Target disk' {
@@ -78,7 +78,7 @@ model {
   installer.grub -> installer.kernel 'boots with kernel flags'
   installer.kernel -> installer.init 'runs /init from the initrd'
   installer.init -> installer.installerBin 'runs; reboots on success'
-  operator -> installer.installerBin 'confirms prompts on the console'
+  operator -> installer.installerBin 'enters the admin password and confirms the wipe on the console'
 
   installer.installerBin.diskScanner -> installer.installerBin.partitioner 'chosen disk'
   installer.installerBin.partitioner -> installer.installerBin.formatMount 'partition paths'
