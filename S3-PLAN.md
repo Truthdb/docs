@@ -5,10 +5,10 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
 ## Buckets and objects
 
 1. Manage buckets: create, list, inspect configuration, change settings, empty, delete.
-2. Store objects: upload a file, upload bytes from an application, upload many files, replace an existing object.
+2. ✅ Store objects: PutObject streams the body into the object engine in segments, up to 5 GiB. It verifies SigV4 chunk signatures, checksums and Content-MD5 as the body arrives. Replacing an object releases the old body after a grace period. Uploading many files is a client loop over PutObject (truthdb#203).
 3. Multipart uploads: upload in parts, retry failed parts, resume, complete or abort, clean up abandoned uploads.
-4. Retrieve objects: download, stream contents, download many, fetch a byte range, fetch a specific version.
-5. Inspect objects: existence check and metadata (size, content type, modification time, checksum) without downloading the body.
+4. ✅ Retrieve objects: GetObject streams a leased body; it supports single byte ranges (206/416), the If-Match, If-None-Match, If-Modified-Since and If-Unmodified-Since headers, and `versionId` (truthdb#203).
+5. ✅ Inspect objects: HeadObject returns size, ETag (MD5), Last-Modified, content type, the stored system headers and `x-amz-meta-*`, without the body (truthdb#203).
 6. Browse and organise: list objects, list by key prefix, paginate, folder-like paths via prefixes and delimiters.
 7. Copy and move: copy within or between buckets and across regions; rename/move as copy followed by delete.
 8. Delete objects: one, many in a batch, everything under a prefix, permanently delete specific versions.
