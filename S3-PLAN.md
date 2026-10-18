@@ -4,7 +4,7 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
 
 ## Buckets and objects
 
-1. Manage buckets: create, list, inspect configuration, change settings, empty, delete.
+1. ✅ Manage buckets: CreateBucket (AWS naming rules), ListBuckets, HeadBucket, GetBucketLocation, versioning settings (Put/GetBucketVersioning), and DeleteBucket only when no object or open upload is left. Emptying a bucket is a listing followed by DeleteObjects on the client side (truthdb#202, #209).
 2. ✅ Store objects: PutObject streams the body into the object engine in segments, up to 5 GiB. It verifies SigV4 chunk signatures, checksums and Content-MD5 as the body arrives. Replacing an object releases the old body after a grace period. Uploading many files is a client loop over PutObject (truthdb#203).
 3. ✅ Multipart uploads: Create, UploadPart (a part can be retried or replaced), ListParts and ListMultipartUploads (to resume), Complete (a composite of the parts, no bytes copied; S3 order, ETag and size rules; at most 5 TiB) and Abort. Uploads left open for 7 days are aborted by garbage collection (truthdb#206).
 4. ✅ Retrieve objects: GetObject streams a leased body; it supports single byte ranges (206/416), the If-Match, If-None-Match, If-Modified-Since and If-Unmodified-Since headers, and `versionId` (truthdb#203).
@@ -12,8 +12,8 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
 6. ✅ Browse and organise: ListObjectsV2 and ListObjects support prefix, delimiter with CommonPrefixes, max-keys, start-after or marker, continuation tokens and `encoding-type=url`. A folder whose keys are all deleted is not listed, and each call scans a bounded number of rows (truthdb#204).
 7. ✅ Copy and move: CopyObject shares the source body (no bytes copied) within or between buckets, with COPY/REPLACE metadata, copy-source conditions and `versionId`. UploadPartCopy shares a whole part or copies a byte range. Move is a copy followed by a delete on the client side. There is one region, so "across regions" does not apply (truthdb#207).
 8. ✅ Delete objects: DeleteObject (a delete marker in a versioned bucket, a permanent delete with `versionId`) and DeleteObjects (up to 1000 keys, quiet mode, Content-MD5 or checksum required). Deleting everything under a prefix is a listing followed by DeleteObjects on the client side (truthdb#205).
-9. Metadata and tags: read and set user metadata, content type, cache headers, download filename; add, change and remove tags.
-10. Versioning: enable/suspend, list versions, retrieve an older version, restore overwritten data, recover deleted objects via delete markers.
+9. ✅ Metadata and tags: system headers (content type, cache control, content disposition, encoding, language, expires) and `x-amz-meta-*` at write time and on GET/HEAD; CopyObject REPLACE to change them; tags through `x-amz-tagging` and Put/Get/DeleteObjectTagging, within S3's limits (truthdb#203, #208).
+10. ✅ Versioning: enable or suspend; version ids on every response; ListObjectVersions with delete markers; GET by `versionId`; restore by copying an older version; recover a deleted object by deleting its marker (truthdb#209).
 
 ## Search
 
