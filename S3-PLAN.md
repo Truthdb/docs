@@ -11,7 +11,7 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
 5. ✅ Inspect objects: HeadObject returns size, ETag (MD5), Last-Modified, content type, the stored system headers and `x-amz-meta-*`, without the body (truthdb#203).
 6. ✅ Browse and organise: ListObjectsV2 and ListObjects support prefix, delimiter with CommonPrefixes, max-keys, start-after or marker, continuation tokens and `encoding-type=url`. A folder whose keys are all deleted is not listed, and each call scans a bounded number of rows (truthdb#204).
 7. Copy and move: copy within or between buckets and across regions; rename/move as copy followed by delete.
-8. Delete objects: one, many in a batch, everything under a prefix, permanently delete specific versions.
+8. ✅ Delete objects: DeleteObject (a delete marker in a versioned bucket, a permanent delete with `versionId`) and DeleteObjects (up to 1000 keys, quiet mode, Content-MD5 or checksum required). Deleting everything under a prefix is a listing followed by DeleteObjects on the client side (truthdb#205).
 9. Metadata and tags: read and set user metadata, content type, cache headers, download filename; add, change and remove tags.
 10. Versioning: enable/suspend, list versions, retrieve an older version, restore overwritten data, recover deleted objects via delete markers.
 
