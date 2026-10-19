@@ -19,8 +19,8 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
 
 11. ✅ Exact lookup by bucket and key: HeadObject and GetObject, with 404 for a missing key and `x-amz-delete-marker` when its newest version is a delete marker (truthdb#203, #209; tests #210).
 12. ✅ Prefix search via native listing: ListObjectsV2/ListObjects `prefix`, in UTF-8 byte order, with delimiters and pagination (truthdb#204; tests #210).
-13. Substring or pattern match on names (client-side filtering or a name index).
-14. Search by metadata (tags, size, storage class) through a queryable metadata index.
+13. ✅ Substring or pattern match on names: `SELECT ... FROM sys.s3_objects(@bucket [, @prefix]) WHERE [key] LIKE ...` over TDS, a live inventory read from the object engine's own trees (truthdb#211).
+14. ✅ Search by metadata: `sys.s3_objects`, `sys.s3_object_versions`, `sys.s3_object_tags` and `sys.s3_object_metadata` (size, storage class, content type, tags, user metadata), plus `sys.s3_journal(@bucket [, @after])`, the change journal in S3 Metadata's journal-table shape (truthdb#211, #213).
 15. Full-text search inside object contents.
 16. Query structured file contents (Athena/Spark-style SQL over stored files).
 17. Semantic similarity search over embeddings (S3 Vectors equivalent).
