@@ -17,8 +17,8 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
 
 ## Search
 
-11. Exact lookup by bucket and key.
-12. Prefix search via native listing.
+11. ✅ Exact lookup by bucket and key: HeadObject and GetObject, with 404 for a missing key and `x-amz-delete-marker` when its newest version is a delete marker (truthdb#203, #209; tests #210).
+12. ✅ Prefix search via native listing: ListObjectsV2/ListObjects `prefix`, in UTF-8 byte order, with delimiters and pagination (truthdb#204; tests #210).
 13. Substring or pattern match on names (client-side filtering or a name index).
 14. Search by metadata (tags, size, storage class) through a queryable metadata index.
 15. Full-text search inside object contents.
