@@ -27,7 +27,7 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
 
 ## Operations
 
-18. Access control: grant and revoke read/write/list/delete, scope to buckets or prefixes, cross-account access, block public access.
+18. ✅ Access control: accounts, their users and access keys; AWS-style bucket policies and user policies (inline and managed, through an IAM API subset and STS GetCallerIdentity) evaluated as AWS does, scoping read/write/list/delete to buckets or prefixes, across accounts and for anonymous callers; Block Public Access per bucket and per account, on for new buckets; ACLs disabled (BucketOwnerEnforced) (truthdb#223–#227).
 19. Sharing: presigned download URLs, presigned uploads, public read for selected content.
 20. Data protection: encryption at rest, key management, retention periods (Object Lock), legal holds.
 21. Lifecycle: transition to cheaper storage classes, expire objects after a period, expire old versions, restore archived objects before retrieval.
