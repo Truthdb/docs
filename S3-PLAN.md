@@ -22,7 +22,7 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
 13. ✅ Substring or pattern match on names: `SELECT ... FROM sys.s3_objects(@bucket [, @prefix]) WHERE [key] LIKE ...` over TDS, a live inventory read from the object engine's own trees (truthdb#211).
 14. ✅ Search by metadata: `sys.s3_objects`, `sys.s3_object_versions`, `sys.s3_object_tags` and `sys.s3_object_metadata` (size, storage class, content type, tags, user metadata), plus `sys.s3_journal(@bucket [, @after])`, the change journal in S3 Metadata's journal-table shape (truthdb#211, #213).
 15. Full-text search inside object contents.
-16. Query structured file contents (Athena/Spark-style SQL over stored files).
+16. ✅ Query structured file contents: `sys.s3_read(@bucket, @key, 'csv'|'json'|'parquet' [, @options])` streams a stored object (or, with `{"prefix": true}`, every object under a prefix) as typed rows to any SQL client; Parquet files are read defensively against hostile input (truthdb#216, #217).
 17. Semantic similarity search over embeddings (S3 Vectors equivalent).
 
 ## Operations
