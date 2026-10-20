@@ -28,7 +28,7 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
 ## Operations
 
 18. ✅ Access control: accounts, their users and access keys; AWS-style bucket policies and user policies (inline and managed, through an IAM API subset and STS GetCallerIdentity) evaluated as AWS does, scoping read/write/list/delete to buckets or prefixes, across accounts and for anonymous callers; Block Public Access per bucket and per account, on for new buckets; ACLs disabled (BucketOwnerEnforced) (truthdb#223–#227).
-19. Sharing: presigned download URLs, presigned uploads, public read for selected content.
+19. ✅ Sharing: presigned URLs (query-string SigV4, up to 7 days, for GET, HEAD, PUT, DELETE and part uploads, with `response-*` header overrides); browser form uploads (POST Object, the SDKs' presigned POST) under a signed policy document (expiration, eq, starts-with and content-length-range conditions, every field covered) or anonymously under a bucket policy; public read for selected content by bucket policy on a prefix or an object tag (truthdb#228, #230).
 20. Data protection: encryption at rest, key management, retention periods (Object Lock), legal holds.
 21. Lifecycle: transition to cheaper storage classes, expire objects after a period, expire old versions, restore archived objects before retrieval.
 22. Synchronise and migrate: sync local directories, migrate datasets, transfer between storage systems.
