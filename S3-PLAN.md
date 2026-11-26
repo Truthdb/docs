@@ -62,7 +62,12 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
     - compaction rewrites small Parquet files by Iceberg's bin-pack rules. It applies position and equality deletes, and sorts and z-orders by the table's sort order. Each rewrite is committed as a `replace` snapshot only when every row is accounted for.
 
     Not built: Avro and ORC data files, and the Iceberg v3 format. Compaction re-runs on a conflict, without rebasing. There is no AWS Lake Formation or Glue integration (truthdb#321–#331).
-42. Access Points: named endpoints with their own access policies per application.
+42. ✅ Access Points: the S3 Control API (CreateAccessPoint, GetAccessPoint, ListAccessPoints, DeleteAccessPoint, access point policies and their policy status), with an alias per access point, Block Public Access settings fixed at creation, and access points on another account's bucket named with its owner. Only the Internet network origin is built, and VPC configurations, tags and directory buckets are refused. Requests reach an access point by its host (`<name>-<account>.s3-accesspoint.<region>.<domain>`) or by its alias in place of the bucket's name. They take the object operations and the bucket reads AWS lists, and act on its bucket while that bucket is still the one it was made for. Authorization needs both sides to allow:
+    - the access point's policy and the caller's own policies, on the access point's ARN;
+    - the bucket's policy, on the bucket's ARN, with a grant to an account counting as that account's policies allow;
+    - both sides see `s3:DataAccessPointArn`, `s3:DataAccessPointAccount` and `s3:AccessPointNetworkOrigin`, and a RestrictPublicBuckets of the access point, the bucket or its owner's account restricts both.
+
+    Requests through access points count for their bucket in the request metrics, in metrics configurations filtered on `AccessPointArn` (single-object requests only), in its access log (the Access Point ARN field) and in CloudTrail (an `AWS::S3::AccessPoint` resource). The bucket's CORS configuration answers for them. An account that owns neither the access point nor the bucket sees only the name it gave in its own events. Bucket names with an `s3-accesspoint` label are refused, so that no bucket shares an access point's host. Not built: HTTPS enforcement on access points, copy sources named by an access point, form uploads (POST Object) through an access point, and VPC origins. Which ARN identity policies must allow is unconfirmed against AWS (truthdb#332–#334).
 43. Object Lambda: transform objects on read.
 44. Requester Pays buckets.
 45. Transfer acceleration.
