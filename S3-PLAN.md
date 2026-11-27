@@ -76,5 +76,30 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
     The event carries AWS's context. Its `inputS3Url` is presigned with the caller's own key and carries this server's mark, so `aws:CalledVia` holds only for that very request. Authorization uses AWS's `s3-object-lambda` actions on the access point, and every check a passed-on request makes is also made as its `s3-object-lambda` twin. Metrics (when on) are in `AWS/S3` by AccessPointName and DataSourceARN, and CloudTrail records function-answered requests as Object Lambda's events. AWS has kept Object Lambda for existing customers only since 2025-11-07. Not built: presigned URLs for the ARN host, ListMultipartUploads through it, and a WriteGetObjectResponse counted after its GetObject has stopped waiting. Unconfirmed against AWS: the error codes, the metrics' namespace and the CloudTrail form (truthdb#335–#338).
 44. ✅ Requester Pays buckets: Put and GetBucketRequestPayment (Requester or BucketOwner; set by the bucket's owner only, whatever a policy allows; not for directory buckets). A request on a Requester Pays bucket from outside its owner's account must say its requester pays (`x-amz-request-payer: requester`, the header, a presigned URL's query parameter, or a form upload's field its policy covers), or it is refused with 403 AccessDenied. This covers a copy's source bucket. Anonymous requests and the website endpoint are always refused. A successful answer says `x-amz-request-charged: requester`, and what each requester was charged for (requests and bytes, by bucket and account) is in `sys.dm_s3_requester_charges`. There is no billing. A Requester Pays bucket is no logging target. Not asked: Batch Operations and replication, which act only by the bucket owner's own grants (truthdb#339).
 45. ✅ Transfer acceleration: Put and GetBucketAccelerateConfiguration (Enabled or Suspended, each kept, so Suspended is told from unset; refused for a bucket name with periods; not for directory buckets). The accelerate endpoints `<bucket>.s3-accelerate.<domain>` and `<bucket>.s3-accelerate.dualstack.<domain>` serve a bucket only while its acceleration is Enabled, and only its virtual-hosted S3 requests. Everything else through them is refused before it is served: the endpoint itself (ListBuckets, path-style), CreateBucket, DeleteBucket, S3 Control, and other services' requests. Bucket names with an `s3-accelerate` label are refused. Nothing is faster through it: it is the same server, and it takes effect at once (truthdb#340).
-46. Storage analytics dashboard (Storage Lens equivalent).
+46. ✅ Storage Lens: configurations (dashboards) through the S3 Control API, daily metrics, exports and a dashboard page.
+
+    **Configurations.** Put, Get, Delete and ListStorageLensConfigurations, and their tags, per account in this server's Region, at most 50 an account:
+    - **Kept:** the scope (Include or Exclude, by bucket or Region), the account and bucket levels and their metrics (free, activity, advanced cost optimization, advanced data protection), the prefix level, and an S3 bucket export (CSV or Parquet, SSE-S3).
+    - **Refused with 501:** what is not built: detailed status code and advanced performance metrics, Storage Lens groups, organizations, S3 Tables and expanded-prefix exports, SSE-KMS, CloudWatch publishing, and exports to another account's bucket.
+    - **Ids:** a configuration's id is checked wherever it is given (body or path) before it is looked up.
+
+    **Daily metrics.** Each enabled configuration's report of a day is made at the server's first pass after the day ends. It holds:
+    - the storage metrics as they are then, per storage class: current and noncurrent versions, delete markers, incomplete uploads (and those older than 7 days), encrypted, replicated and locked versions;
+    - bucket settings counts;
+    - where turned on, lifecycle and replication rule counts and the day's requests (counted from the server's request counters, by day);
+    - prefix records to the configured depth and share.
+
+    How reports are kept:
+    - A report is written in bounded batches and read only once its day is recorded as reported. A crash leaves it whole or unread.
+    - Reports are kept 455 days, under the configuration's generation. One deleted and put again starts afresh, and old reports are dropped in batches.
+    - `sys.dm_s3_storage_lens` shows every report's records.
+
+    **Exports.** A report is written to its destination bucket as CSV (with a header row) or Parquet files, with a `manifest.json` listing each file's key, size and MD5, under AWS's `StorageLens/<account>/<id>/V_1/` layout.
+    - Files are put at most 100 a transaction, each part its own engine call. The last part holds the manifest and records the day as exported.
+    - An export of up to 99 files is therefore made once and whole. A larger one cut short puts its earlier parts again.
+    - A missing destination, or one of another account, gets nothing.
+
+    **Dashboard.** The admin listener's `/storage-lens` lists the configurations, and `/storage-lens/<account>/<id>` shows one's last report, its largest buckets and its trend. These pages are read-only HTML, behind the admin token, with no script.
+
+    **Not built, and stated:** AWS's default dashboard, metrics without a data source here (unsupported-signature, TLS and SSE-KMS request counts, Select), and object metadata in StorageBytes.
 47. Mount a bucket as a filesystem (Mountpoint equivalent).
