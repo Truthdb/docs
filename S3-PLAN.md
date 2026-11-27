@@ -102,4 +102,19 @@ Every S3 workflow, one numbered item each. When an item is done, overwrite its l
     **Dashboard.** The admin listener's `/storage-lens` lists the configurations, and `/storage-lens/<account>/<id>` shows one's last report, its largest buckets and its trend. These pages are read-only HTML, behind the admin token, with no script.
 
     **Not built, and stated:** AWS's default dashboard, metrics without a data source here (unsupported-signature, TLS and SSE-KMS request counts, Select), and object metadata in StorageBytes.
-47. Mount a bucket as a filesystem (Mountpoint equivalent).
+47. ✅ Mount a bucket as a file system: `truthdb-mount <bucket> <directory>` (a FUSE file system, on `fuser` without libfuse), with Mountpoint for Amazon S3's semantics, against this server or any S3 service.
+
+    **Reading:**
+    - **Directories** are what `/` divides the keys into. A key ending in `/` is a directory, not a file.
+    - **Names not shown:** `.`, `..`, empty ones, and those holding NUL.
+    - **One name, two things:** of a file and a directory of one name, the directory is shown.
+    - **Reads** are ranged GETs, read ahead 4 MiB.
+    - **Metadata:** files are `0644` and directories `0755`, the mounting user's. `--prefix`, `--uid`, `--gid`, `--file-mode`, `--dir-mode` and `--allow-other` change that.
+
+    **Writing** (unless `--read-only`):
+    - A new file is written in order from its start and uploaded in 8 MiB parts as it is. It is in the bucket once its opener closes it (once anything is written) or syncs it, and is not read while written.
+    - An existing file is replaced only with `--allow-overwrite` and an open that truncates. It is deleted only with `--allow-delete`.
+    - A directory made is the mount's own until a file is written in it. Only such a directory, empty, is removed.
+    - Renames, links, and changes of mode or owner are refused.
+
+    **The binary:** the endpoint and keys are taken as `truthdb-cli s3` takes them. It runs in the foreground, ends when unmounted, and unmounts when stopped. Each choice where Mountpoint is silent (chiefly the error codes) is stated in truthdb #345 and #346.
